@@ -20,7 +20,7 @@ class ProxyPass {
     std::unordered_map<std::uint64_t, std::unique_ptr<ProxyBridge>> mBridges{};
     const protocol::AuthenticationKeyManager&                       mAuthManager;
     protocol::PemKeyPair                                            mProxyServerKeyPair{};
-    std::mutex                                                      mBridgesMutex{};
+    std::mutex                                                      mMutex{};
     ProxySettings&                                                  mSettings;
 
 public:

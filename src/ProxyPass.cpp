@@ -9,6 +9,10 @@
 
 namespace sculk {
 
+#define PROXY_PASS_SHOULD_LOG_PACKET(ID)                                                                               \
+    (mSettings.packets_logger.black_list_mode && !mSettings.packets_logger.packet_ids.contains(ID))                    \
+        || (!mSettings.packets_logger.black_list_mode && mSettings.packets_logger.packet_ids.contains(ID))
+
 ProxyPass::ProxyPass(
     protocol::thread::ThreadPool&             sharedPool,
     protocol::io::ClientIoRuntime&            sharedIoRuntime,
@@ -87,18 +91,24 @@ void ProxyPass::processClientPacket(ProxyBridge& bridge, const protocol::IPacket
         return handleClient(bridge, static_cast<const protocol::LoginPacket&>(packet));
     }
     case protocol::MinecraftPacketIds::ClientToServerHandshake: {
-        if (!mSettings.ignored_packet_ids.contains(id)) {
+        if (PROXY_PASS_SHOULD_LOG_PACKET(id)) {
             std::println("[ProxyPass] Client => Proxy | {}", packet);
         }
-        auto pkt = protocol::RequestNetworkSettingsPacket{protocol::getProtocolVersion()};
-        bridge.sendPacketToServer(pkt, true);
-        if (!mSettings.ignored_packet_ids.contains(id)) {
-            std::println("[ProxyPass] Proxy => Server | {}", pkt);
+        {
+            std::scoped_lock lock(mMutex);
+            if (bridge.mRealClientSession.isConnected()) {
+                auto pkt = protocol::RequestNetworkSettingsPacket{protocol::getProtocolVersion()};
+                bridge.sendPacketToServer(pkt, true);
+                if (PROXY_PASS_SHOULD_LOG_PACKET(id)) {
+                    std::println("[ProxyPass] Proxy => Server | {}", pkt);
+                }
+            }
+            bridge.mClientReady = true;
         }
         break;
     }
     default: {
-        if (!mSettings.ignored_packet_ids.contains(id)) {
+        if (PROXY_PASS_SHOULD_LOG_PACKET(id)) {
             std::println("[ProxyPass] Client => Proxy => Server | {}", packet);
         }
         bridge.sendPacketToServer(packet);
@@ -108,7 +118,7 @@ void ProxyPass::processClientPacket(ProxyBridge& bridge, const protocol::IPacket
 }
 
 void ProxyPass::handleClient(protocol::Session& session, const protocol::RequestNetworkSettingsPacket& packet) {
-    if (!mSettings.ignored_packet_ids.contains(protocol::MinecraftPacketIds::RequestNetworkSettings)) {
+    if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::RequestNetworkSettings)) {
         std::println("[ProxyPass] Client => Proxy | {}", packet);
     }
     if (packet.mClientNetworkVersion != protocol::getProtocolVersion()) {
@@ -122,7 +132,7 @@ void ProxyPass::handleClient(protocol::Session& session, const protocol::Request
     protocol::Session::Buffer       buffer{};
     protocol::BinaryStream          stream{buffer};
     settingsPacket.writeWithHeader(stream);
-    if (!mSettings.ignored_packet_ids.contains(protocol::MinecraftPacketIds::NetworkSettings)) {
+    if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::NetworkSettings)) {
         std::println("[ProxyPass] Proxy => Client | {}", settingsPacket);
     }
     session.sendPacketImmediately(std::move(buffer));
@@ -133,7 +143,7 @@ void ProxyPass::handleClient(protocol::Session& session, const protocol::Request
 }
 
 void ProxyPass::handleClient(ProxyBridge& bridge, const protocol::LoginPacket& packet) {
-    if (!mSettings.ignored_packet_ids.contains(protocol::MinecraftPacketIds::Login)) {
+    if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::Login)) {
         std::println("[ProxyPass] Client => Proxy | {}", packet);
     }
 
@@ -175,7 +185,7 @@ void ProxyPass::handleClient(ProxyBridge& bridge, const protocol::LoginPacket& p
     handshakePacket.mHandshakeWebToken = token->toString();
 
     bridge.sendPacketToClient(handshakePacket, true);
-    if (!mSettings.ignored_packet_ids.contains(protocol::MinecraftPacketIds::ServerToClientHandshake)) {
+    if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::ServerToClientHandshake)) {
         std::println("[ProxyPass] Proxy => Client | {}", handshakePacket);
     }
 
@@ -216,6 +226,19 @@ void ProxyPass::handleFirstClientPacket(
 
     bridge.mProxyClient.setOnPacketReceive([this, &bridge](std::unique_ptr<protocol::IPacket>&& packet) noexcept {
         processServerPacket(bridge, *packet);
+    });
+
+    bridge.mProxyClient.setOnConnected([this, &bridge]() noexcept {
+        std::scoped_lock lock(mMutex);
+        if (!bridge.mClientReady) {
+            return;
+        }
+        auto pkt = protocol::RequestNetworkSettingsPacket{protocol::getProtocolVersion()};
+        bridge.sendPacketToServer(pkt, true);
+        if (PROXY_PASS_SHOULD_LOG_PACKET(pkt.getId())) {
+            std::println("[ProxyPass] Proxy => Server | {}", pkt);
+        }
+        bridge.mClientReady = true;
     });
 
     bridge.mProxyClient.setOnConnectionFailed([this, &bridge]() noexcept {
@@ -280,7 +303,7 @@ void ProxyPass::processServerPacket(ProxyBridge& bridge, const protocol::IPacket
         break;
     }
     default: {
-        if (!mSettings.ignored_packet_ids.contains(id)) {
+        if (PROXY_PASS_SHOULD_LOG_PACKET(id)) {
             std::println("[ProxyPass] Server => Proxy => Client | {}", packet);
         }
         bridge.sendPacketToClient(packet);
@@ -290,7 +313,8 @@ void ProxyPass::processServerPacket(ProxyBridge& bridge, const protocol::IPacket
 }
 
 void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::NetworkSettingsPacket& packet) {
-    if (!mSettings.ignored_packet_ids.contains(protocol::MinecraftPacketIds::NetworkSettings)) {
+    if (mSettings.packets_logger.black_list_mode
+        && !mSettings.packets_logger.packet_ids.contains(protocol::MinecraftPacketIds::NetworkSettings)) {
         std::println("[ProxyPass] Server => Proxy | {}", packet);
     }
     bridge.mProxyClient.getSession().setCompression(
@@ -302,14 +326,15 @@ void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::NetworkSetting
     loginPacket.mNetworkVersion = protocol::getProtocolVersion();
     (void)bridge.mConnectionRequest.selfSign(mProxyServerKeyPair);
     loginPacket.mRawConnectionRequest = bridge.mConnectionRequest.toString();
+
     bridge.sendPacketToServer(loginPacket, true);
-    if (!mSettings.ignored_packet_ids.contains(protocol::MinecraftPacketIds::Login)) {
+    if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::Login)) {
         std::println("[ProxyPass] Proxy => Server | {}", loginPacket);
     }
 }
 
 void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::ServerToClientHandshakePacket& packet) {
-    if (!mSettings.ignored_packet_ids.contains(protocol::MinecraftPacketIds::ServerToClientHandshake)) {
+    if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::ServerToClientHandshake)) {
         std::println("[ProxyPass] Server => Proxy | {}", packet);
     }
     auto handshakeToken = protocol::HandShakeToken::fromString(packet.mHandshakeWebToken);
@@ -334,7 +359,7 @@ void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::ServerToClient
     bridge.mProxyClient.getSession().setEncrypted(std::move(*sessionKey));
     protocol::ClientToServerHandshakePacket handshakePacket{};
     bridge.sendPacketToServer(handshakePacket, true);
-    if (!mSettings.ignored_packet_ids.contains(protocol::MinecraftPacketIds::ClientToServerHandshake)) {
+    if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::ClientToServerHandshake)) {
         std::println("[ProxyPass] Proxy => Server | {}", handshakePacket);
     }
 }

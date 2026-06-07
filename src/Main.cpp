@@ -1,9 +1,27 @@
 #include "ProxyPass.hpp"
 #include <iostream>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <print>
 
 int main() {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hConsole != INVALID_HANDLE_VALUE) {
+        DWORD dwMode = 0;
+        if (GetConsoleMode(hConsole, &dwMode)) {
+            SetConsoleMode(hConsole, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        }
+    }
+    SetConsoleTitle(L"ProxyPass");
+#endif
+
+    std::ios::sync_with_stdio(false);
+
     std::mutex              waitMutex{};
     std::condition_variable waitCv{};
     bool                    stopped{false};

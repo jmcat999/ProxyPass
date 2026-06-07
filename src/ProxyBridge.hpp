@@ -11,6 +11,7 @@ public:
     protocol::ClientNetworkSystem mProxyClient{};
     protocol::Session&            mRealClientSession;
     protocol::ConnectionRequest   mConnectionRequest{};
+    bool                          mClientReady{};
 
 public:
     explicit ProxyBridge(

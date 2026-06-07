@@ -12,7 +12,8 @@ ProxyBridge::ProxyBridge(
 : mRealGuid(guid),
   mRealAddress(address),
   mProxyClient(threadPool, ioRuntime),
-  mRealClientSession(realClientSession) {}
+  mRealClientSession(realClientSession),
+  mClientReady(false) {}
 
 ProxyBridge::~ProxyBridge() {
     if (mProxyClient.isConnected()) {
