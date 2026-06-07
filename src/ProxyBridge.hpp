@@ -1,6 +1,6 @@
 #pragma once
-#include "sculk/protocol/auth/ConnectionRequest.hpp"
-#include "sculk/protocol/connection/ClientNetworkSystem.hpp"
+#include <sculk/protocol/auth/ConnectionRequest.hpp>
+#include <sculk/protocol/connection/ClientNetworkSystem.hpp>
 
 namespace sculk {
 
@@ -9,7 +9,6 @@ public:
     RakNet::RakNetGUID            mRealGuid{};
     RakNet::SystemAddress         mRealAddress{};
     protocol::ClientNetworkSystem mProxyClient{};
-    std::atomic_bool              mRealServerConnected{};
     protocol::Session&            mRealClientSession;
     protocol::ConnectionRequest   mConnectionRequest{};
 
@@ -21,6 +20,8 @@ public:
         protocol::io::ClientIoRuntime& ioRuntime,
         protocol::Session&             realClientSession
     ) noexcept;
+
+    ~ProxyBridge();
 
     bool sendPacketToClient(const protocol::IPacket& packet, bool immediate = false);
 

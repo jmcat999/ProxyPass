@@ -26,6 +26,11 @@ file(GLOB_RECURSE PROJECT_SOURCES CONFIGURE_DEPENDS
 
 add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+	MAGIC_ENUM_RANGE_MIN=0
+	MAGIC_ENUM_RANGE_MAX=512
+)
+
 target_link_libraries(${PROJECT_NAME} PRIVATE
 	Protocol::Protocol
 	reflection::reflection

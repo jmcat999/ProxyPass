@@ -1,13 +1,15 @@
 #include "ProxyBridge.hpp"
 #include "ProxySettings.hpp"
-#include "sculk/protocol/auth/AuthenticationKeyManager.hpp"
-#include "sculk/protocol/codec/packet/LoginPacket.hpp"
-#include "sculk/protocol/codec/packet/NetworkSettingsPacket.hpp"
-#include "sculk/protocol/codec/packet/RequestNetworkSettingsPacket.hpp"
-#include "sculk/protocol/codec/packet/ServerToClientHandshakePacket.hpp"
-#include "sculk/protocol/connection/ServerNetworkSystem.hpp"
-#include "sculk/protocol/connection/io/ClientIoRuntime.hpp"
-#include "sculk/protocol/connection/thread/ThreadPool.hpp"
+#include <sculk/protocol/auth/AuthenticationKeyManager.hpp>
+#include <sculk/protocol/codec/actor/player/DisconnectFailReason.hpp>
+#include <sculk/protocol/codec/actor/player/PlayStatus.hpp>
+#include <sculk/protocol/codec/packet/LoginPacket.hpp>
+#include <sculk/protocol/codec/packet/NetworkSettingsPacket.hpp>
+#include <sculk/protocol/codec/packet/RequestNetworkSettingsPacket.hpp>
+#include <sculk/protocol/codec/packet/ServerToClientHandshakePacket.hpp>
+#include <sculk/protocol/connection/ServerNetworkSystem.hpp>
+#include <sculk/protocol/connection/io/ClientIoRuntime.hpp>
+#include <sculk/protocol/connection/thread/ThreadPool.hpp>
 
 namespace sculk {
 
@@ -16,26 +18,20 @@ class ProxyPass {
     protocol::io::ClientIoRuntime&                                  mSharedIoRuntime;
     protocol::ServerNetworkSystem                                   mProxyServer{};
     std::unordered_map<std::uint64_t, std::unique_ptr<ProxyBridge>> mBridges{};
-    std::string                                                     mUpstreamHost{};
-    std::uint16_t                                                   mUpstreamServerPort{};
     const protocol::AuthenticationKeyManager&                       mAuthManager;
     protocol::PemKeyPair                                            mProxyServerKeyPair{};
     std::mutex                                                      mBridgesMutex{};
+    ProxySettings&                                                  mSettings;
 
 public:
     ProxyPass(
         protocol::thread::ThreadPool&             sharedPool,
         protocol::io::ClientIoRuntime&            sharedIoRuntime,
-        protocol::AuthenticationKeyManager const& authManager
+        protocol::AuthenticationKeyManager const& authManager,
+        ProxySettings&                            settings
     );
 
-    bool start(
-        std::uint16_t    protV4,
-        std::uint16_t    protV6,
-        std::uint32_t    maxConnections,
-        std::string_view upstreamHost,
-        std::uint16_t    upstreamPort
-    );
+    bool start();
 
 private:
     void onClientDisconnected(const RakNet::RakNetGUID&);
@@ -52,6 +48,8 @@ private:
     void processServerPacket(ProxyBridge&, const protocol::IPacket&);
     void handleServer(ProxyBridge&, const protocol::NetworkSettingsPacket&);
     void handleServer(ProxyBridge&, const protocol::ServerToClientHandshakePacket&);
+    void disconnectClient(const RakNet::RakNetGUID&, protocol::PlayStatus);
+    void disconnectClient(const RakNet::RakNetGUID&, std::string_view, protocol::DisconnectFailReason);
 };
 
 } // namespace sculk
