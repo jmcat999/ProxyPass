@@ -1,17 +1,22 @@
 name: build
-
 on:
     push:
         branches:
             - main
+        paths:
+            - src/**
+            - CMakeLists.txt
     pull_request:
         branches:
             - main
+        paths:
+            - src/**
+            - CMakeLists.txt
     workflow_dispatch:
 
 jobs:
     build-on-windows:
-        name: Build on Windows X86_64 (MSVC)
+        name: Build on Windows AMD64 (MSVC)
         runs-on: windows-2025-vs2026
         steps:
             - name: Checkout
@@ -32,7 +37,7 @@ jobs:
               run: cmake --build build --config Release --parallel
 
     build-on-linux-gnu:
-        name: Build on Linux GNU (GCC)
+        name: Build on Linux GNU X86_64 (GCC)
         runs-on: ubuntu-24.04
         container:
             image: gcc:15
