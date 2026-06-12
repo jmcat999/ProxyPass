@@ -1,0 +1,54 @@
+name: build
+
+on:
+    push:
+        branches:
+            - main
+    pull_request:
+        branches:
+            - main
+    workflow_dispatch:
+
+jobs:
+    build-on-windows:
+        name: Build on Windows X86_64 (MSVC)
+        runs-on: windows-2025-vs2026
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Setup CMake
+              uses: jwlawson/actions-setup-cmake@v2
+
+            - name: Setup MSVC Developer Command Prompt
+              uses: ilammy/msvc-dev-cmd@v1
+              with:
+                  arch: x64
+
+            - name: Configure
+              run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl
+
+            - name: Build
+              run: cmake --build build --config Release --parallel
+
+    build-on-linux-gnu:
+        name: Build on Linux GNU (GCC)
+        runs-on: ubuntu-24.04
+        container:
+            image: gcc:15
+            options: --privileged
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Setup CMake
+              uses: jwlawson/actions-setup-cmake@v2
+
+            - name: Install Dependencies
+              run: apt-get update && apt-get install -y ninja-build cmake git openssl libssl-dev
+
+            - name: Configure
+              run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+            - name: Build
+              run: cmake --build build --config Release --parallel

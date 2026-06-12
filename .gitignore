@@ -65,7 +65,7 @@ vcpkg_installed/
 *.dwo
 
 # test output & cache
-Testing/
+/bin/
 .cache/
 /test/
 proxy_settings.jsonc

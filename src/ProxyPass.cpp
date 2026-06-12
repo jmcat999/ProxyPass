@@ -291,7 +291,7 @@ void ProxyPass::handleFirstClientPacket(
         currentBridge->mClientReady.store(true, std::memory_order_release);
     });
 
-    bridge->mProxyClient.setOnConnectionFailed([this, guid, weakBridge]() noexcept {
+    bridge->mProxyClient.setOnConnectionFailed([this, weakBridge]() noexcept {
         auto currentBridge = weakBridge.lock();
         if (!currentBridge) {
             return;
@@ -308,7 +308,11 @@ void ProxyPass::handleFirstClientPacket(
             currentBridge->mClientInfo.xuid.empty() ? "N/A" : currentBridge->mClientInfo.xuid,
             currentBridge->mClientInfo.pfid.empty() ? "N/A" : currentBridge->mClientInfo.pfid
         );
-        disconnectClient(guid, "Failed to connect to upstream server", protocol::DisconnectFailReason::CantConnect);
+        disconnectClient(
+            currentBridge->mRealGuid,
+            "Failed to connect to upstream server",
+            protocol::DisconnectFailReason::CantConnect
+        );
     });
 
     if (!bridge->mProxyClient.connect(mSettings.upstream_host, mSettings.upstream_port)) {
