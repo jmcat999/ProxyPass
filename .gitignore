@@ -69,3 +69,5 @@ vcpkg_installed/
 .cache/
 /test/
 proxy_settings.jsonc
+/.vs
+/CMakeSettings.json
