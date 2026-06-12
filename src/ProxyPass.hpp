@@ -14,6 +14,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#include "Logger.hpp"
 #include "ProxyBridge.hpp"
 #include "ProxySettings.hpp"
 #include <parallel_hashmap/phmap.h>
@@ -36,11 +37,14 @@ class ProxyPass {
     const protocol::AuthenticationKeyManager&                                    mAuthManager;
     protocol::PemKeyPair                                                         mProxyServerKeyPair{};
     ProxySettings&                                                               mSettings;
+    Logger&                                                                      mLogger;
 
 public:
-    ProxyPass(protocol::AuthenticationKeyManager const& authManager, ProxySettings& settings);
+    ProxyPass(protocol::AuthenticationKeyManager const& authManager, ProxySettings& settings, Logger& logger);
 
     bool start();
+
+    Logger& getLogger() noexcept;
 
 private:
     void onClientDisconnected(const RakNet::RakNetGUID&);

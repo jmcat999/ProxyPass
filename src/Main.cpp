@@ -44,26 +44,27 @@ int main() {
 
     sculk::protocol::AuthenticationKeyManager authKeyManager{};
     sculk::ProxySettings                      settings{};
+    sculk::Logger                             logger{};
 
     settings.load();
 
-    std::println("[ProxyPass] Waiting for Microsoft Service...");
+    logger.info("[ProxyPass] Waiting for Microsoft Service...");
     if (auto status = authKeyManager.initMojangPublicKeyBlocking(); !status) {
-        std::println(stderr, "[ProxyPass] Failed to connect to Microsoft Service: {}", status.error().message());
+        logger.error("[ProxyPass] Failed to connect to Microsoft Service: {}", status.error().message());
         return 1;
     }
 
-    auto proxyPass = sculk::ProxyPass(authKeyManager, settings);
+    auto proxyPass = sculk::ProxyPass(authKeyManager, settings, logger);
     if (!proxyPass.start()) {
-        std::println(stderr, "[ProxyPass] Failed to start proxy server.");
+        logger.error("[ProxyPass] Failed to start proxy server.");
         return 1;
     }
-    std::println("[ProxyPass] Proxy server started successfully.");
+    logger.info("[ProxyPass] Proxy server started successfully.");
 
     std::unique_lock waitLock{waitMutex};
     waitCv.wait(waitLock, [&] { return stopped; });
 
-    std::println("[ProxyPass] Stopping proxy server...");
+    logger.info("[ProxyPass] Stopping proxy server...");
 
     return 0;
 }
