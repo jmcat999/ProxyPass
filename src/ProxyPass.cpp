@@ -131,7 +131,7 @@ void ProxyPass::processClientPacket(ProxyBridge& bridge, const protocol::IPacket
             std::println("[ProxyPass] Client => Proxy | {}", packet);
         }
         if (bridge.mRealClientSession.isConnected()) {
-            auto pkt = protocol::RequestNetworkSettingsPacket{protocol::getProtocolVersion()};
+            auto pkt = protocol::RequestNetworkSettingsPacket{};
             bridge.sendPacketToServer(pkt, true);
             if (PROXY_PASS_SHOULD_LOG_PACKET(id)) {
                 std::println("[ProxyPass] Proxy => Server | {}", pkt);
@@ -282,7 +282,7 @@ void ProxyPass::handleFirstClientPacket(
             return;
         }
 
-        auto pkt = protocol::RequestNetworkSettingsPacket{protocol::getProtocolVersion()};
+        auto pkt = protocol::RequestNetworkSettingsPacket{};
         currentBridge->sendPacketToServer(pkt, true);
         if (PROXY_PASS_SHOULD_LOG_PACKET(pkt.getId())) {
             std::println("[ProxyPass] Proxy => Server | {}", pkt);
@@ -382,10 +382,8 @@ void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::NetworkSetting
         packet.mCompressionThreshold
     );
 
-    protocol::LoginPacket loginPacket{};
-    loginPacket.mNetworkVersion = protocol::getProtocolVersion();
     (void)bridge.mConnectionRequest.selfSign(mProxyServerKeyPair);
-    loginPacket.mRawConnectionRequest = bridge.mConnectionRequest.toString();
+    protocol::LoginPacket loginPacket{bridge.mConnectionRequest.toString()};
 
     bridge.sendPacketToServer(loginPacket, true);
     if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::Login)) {
