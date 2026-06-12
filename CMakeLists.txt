@@ -30,7 +30,7 @@ set(PROTOCOL_ENABLE_FORMATTING ON CACHE BOOL "Enable formatting support in Proto
 FetchContent_Declare(
 	Protocol
 	GIT_REPOSITORY https://github.com/SculkCatalystMC/Protocol.git
-	GIT_TAG 3414c2393c3208324a87ed13a3cb7c054cc4afe2
+	GIT_TAG main
 )
 FetchContent_Declare(
 	reflection
