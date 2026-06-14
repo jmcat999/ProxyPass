@@ -42,6 +42,7 @@ FetchContent_Declare(
 	GIT_REPOSITORY https://github.com/greg7mdp/parallel-hashmap.git
 	GIT_TAG v2.0.0
 )
+find_package(OpenSSL REQUIRED)
 FetchContent_MakeAvailable(Protocol reflection parallel_hashmap)
 
 set(CMAKE_CXX_STANDARD 23)

@@ -15,17 +15,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #pragma once
-#include <atomic>
-#include <chrono>
-#include <concurrentqueue.h>
 #include <filesystem>
 #include <format>
-#include <fstream>
-#include <limits>
-#include <semaphore>
+#include <memory>
 #include <string>
-#include <string_view>
-#include <thread>
 #include <utility>
 
 namespace sculk {
@@ -40,6 +33,15 @@ public:
     Logger& operator=(const Logger&) = delete;
     Logger(Logger&&)                 = delete;
     Logger& operator=(Logger&&)      = delete;
+
+    enum class LogLevel {
+        Trace,
+        Debug,
+        Info,
+        Warn,
+        Error,
+        Fatal,
+    };
 
     template <class... Args>
     void trace(std::format_string<Args...> format, Args&&... args) {
@@ -71,56 +73,20 @@ public:
         submitMessage(LogLevel::Fatal, std::format(format, std::forward<Args>(args)...));
     }
 
-    void trace(std::string message) { submitMessage(LogLevel::Trace, std::move(message)); }
-    void debug(std::string message) { submitMessage(LogLevel::Debug, std::move(message)); }
-    void info(std::string message) { submitMessage(LogLevel::Info, std::move(message)); }
-    void warn(std::string message) { submitMessage(LogLevel::Warn, std::move(message)); }
-    void error(std::string message) { submitMessage(LogLevel::Error, std::move(message)); }
-    void fatal(std::string message) { submitMessage(LogLevel::Fatal, std::move(message)); }
+    void trace(std::string message);
+    void debug(std::string message);
+    void info(std::string message);
+    void warn(std::string message);
+    void error(std::string message);
+    void fatal(std::string message);
 
     void setFile(std::filesystem::path filePath);
 
 private:
-    enum class LogLevel {
-        Trace,
-        Debug,
-        Info,
-        Warn,
-        Error,
-        Fatal,
-    };
+    void submitMessage(LogLevel level, std::string message);
 
-    enum class TaskKind {
-        Message,
-        SetFile,
-        Stop,
-    };
-
-    struct Task {
-        TaskKind              kind{TaskKind::Message};
-        LogLevel              level{LogLevel::Info};
-        std::string           message{};
-        std::filesystem::path filePath{};
-    };
-
-    void                    submitMessage(LogLevel level, std::string message);
-    void                    submitSetFile(std::filesystem::path filePath);
-    void                    submitStop();
-    void                    run(std::stop_token stopToken);
-    void                    handleTask(Task task);
-    void                    openFile(const std::filesystem::path& filePath);
-    void                    writeMessage(LogLevel level, const std::string& message);
-    static std::string_view levelName(LogLevel level);
-    static std::string      timestamp();
-
-    static constexpr auto kWakeCapacity = std::numeric_limits<std::ptrdiff_t>::max();
-
-    std::atomic_bool                       mStopping{false};
-    moodycamel::ConcurrentQueue<Task>      mQueue{};
-    std::counting_semaphore<kWakeCapacity> mWake{0};
-    std::jthread                           mWorker{};
-    std::filesystem::path                  mCurrentFilePath{};
-    std::ofstream                          mLogFile{};
+    struct Impl;
+    std::unique_ptr<Impl> mImpl;
 };
 
 } // namespace sculk

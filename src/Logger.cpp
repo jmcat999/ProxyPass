@@ -16,121 +16,39 @@
 
 #include "Logger.hpp"
 #include <chrono>
+#include <concurrentqueue.h>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <print>
+#include <semaphore>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
 
 namespace sculk {
 
-Logger::Logger() : Logger(std::filesystem::path{"latest.log"}) {}
+namespace {
 
-Logger::Logger(std::filesystem::path filePath) {
-    openFile(filePath);
-    mWorker = std::jthread{[this](std::stop_token stopToken) { run(stopToken); }};
-}
+using LogLevel = Logger::LogLevel;
 
-Logger::~Logger() {
-    submitStop();
-    if (mWorker.joinable()) {
-        mWorker.join();
-    }
-}
+enum class TaskKind {
+    Message,
+    SetFile,
+};
 
-void Logger::setFile(std::filesystem::path filePath) { submitSetFile(std::move(filePath)); }
+struct Task {
+    TaskKind              kind{TaskKind::Message};
+    LogLevel              level{LogLevel::Info};
+    std::string           message{};
+    std::filesystem::path filePath{};
+};
 
-void Logger::submitMessage(LogLevel level, std::string message) {
-    if (mStopping.load(std::memory_order_acquire)) {
-        return;
-    }
+constexpr auto kWakeCapacity = std::numeric_limits<std::ptrdiff_t>::max();
 
-    mQueue.enqueue(Task{.kind = TaskKind::Message, .level = level, .message = std::move(message)});
-    mWake.release();
-}
-
-void Logger::submitSetFile(std::filesystem::path filePath) {
-    if (mStopping.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    mQueue.enqueue(Task{.kind = TaskKind::SetFile, .filePath = std::move(filePath)});
-    mWake.release();
-}
-
-void Logger::submitStop() {
-    const auto alreadyStopping = mStopping.exchange(true, std::memory_order_acq_rel);
-    if (alreadyStopping) {
-        return;
-    }
-
-    mQueue.enqueue(Task{.kind = TaskKind::Stop});
-    mWake.release();
-    mWorker.request_stop();
-}
-
-void Logger::run(std::stop_token stopToken) {
-    while (true) {
-        mWake.acquire();
-
-        Task task{};
-        if (!mQueue.try_dequeue(task)) {
-            if (mStopping.load(std::memory_order_acquire) || stopToken.stop_requested()) {
-                break;
-            }
-
-            continue;
-        }
-
-        handleTask(std::move(task));
-    }
-
-    if (mLogFile.is_open()) {
-        mLogFile.flush();
-        mLogFile.close();
-    }
-}
-
-void Logger::handleTask(Task task) {
-    switch (task.kind) {
-    case TaskKind::Message:
-        writeMessage(task.level, task.message);
-        return;
-    case TaskKind::SetFile:
-        openFile(task.filePath);
-        return;
-    case TaskKind::Stop:
-        mStopping.store(true, std::memory_order_release);
-        return;
-    }
-}
-
-void Logger::openFile(const std::filesystem::path& filePath) {
-    if (mLogFile.is_open()) {
-        mLogFile.flush();
-        mLogFile.close();
-    }
-
-    mCurrentFilePath = filePath;
-    if (mCurrentFilePath.empty()) {
-        return;
-    }
-
-    mLogFile.clear();
-    mLogFile.open(mCurrentFilePath, std::ios::out | std::ios::trunc);
-}
-
-void Logger::writeMessage(LogLevel level, const std::string& message) {
-    auto* const stream = level == LogLevel::Error || level == LogLevel::Fatal ? stderr : stdout;
-    const auto  line   = std::format("[{}] [{}] {}", timestamp(), levelName(level), message);
-
-    std::println(stream, "{}", line);
-    std::fflush(stream);
-
-    if (mLogFile.is_open()) {
-        mLogFile << line << '\n';
-        mLogFile.flush();
-    }
-}
-
-std::string_view Logger::levelName(LogLevel level) {
+std::string_view levelName(LogLevel level) {
     switch (level) {
     case LogLevel::Trace:
         return "Trace";
@@ -149,10 +67,121 @@ std::string_view Logger::levelName(LogLevel level) {
     return "Unknown";
 }
 
-std::string Logger::timestamp() {
+std::string timestamp() {
     const auto now      = std::chrono::floor<std::chrono::milliseconds>(std::chrono::system_clock::now());
     const auto zonedNow = std::chrono::zoned_time{std::chrono::current_zone(), now};
     return std::format("{:%T}", zonedNow);
 }
+
+} // anonymous namespace
+
+struct Logger::Impl {
+    moodycamel::ConcurrentQueue<Task>      mQueue{};
+    std::counting_semaphore<kWakeCapacity> mWake{0};
+    std::jthread                           mWorker{};
+    std::filesystem::path                  mCurrentFilePath{};
+    std::ofstream                          mLogFile{};
+
+    Impl() = default;
+
+    explicit Impl(std::filesystem::path filePath) {
+        openFile(std::move(filePath));
+        mWorker = std::jthread{[this](std::stop_token stopToken) { run(stopToken); }};
+    }
+
+    ~Impl() {
+        mWorker.request_stop();
+        mWake.release();
+        if (mWorker.joinable()) {
+            mWorker.join();
+        }
+    }
+
+    void submitMessage(LogLevel level, std::string message) {
+        mQueue.enqueue(Task{.kind = TaskKind::Message, .level = level, .message = std::move(message)});
+        mWake.release();
+    }
+
+    void submitSetFile(std::filesystem::path filePath) {
+        mQueue.enqueue(Task{.kind = TaskKind::SetFile, .filePath = std::move(filePath)});
+        mWake.release();
+    }
+
+    void run(std::stop_token stopToken) {
+        while (true) {
+            mWake.acquire();
+
+            Task task{};
+            while (mQueue.try_dequeue(task)) {
+                handleTask(std::move(task));
+            }
+
+            if (stopToken.stop_requested()) {
+                break;
+            }
+        }
+
+        if (mLogFile.is_open()) {
+            mLogFile.flush();
+            mLogFile.close();
+        }
+    }
+
+    void handleTask(Task task) {
+        switch (task.kind) {
+        case TaskKind::Message:
+            writeMessage(task.level, task.message);
+            return;
+        case TaskKind::SetFile:
+            openFile(std::move(task.filePath));
+            return;
+        }
+    }
+
+    void openFile(std::filesystem::path filePath) {
+        if (mLogFile.is_open()) {
+            mLogFile.flush();
+            mLogFile.close();
+        }
+
+        mCurrentFilePath = std::move(filePath);
+        if (mCurrentFilePath.empty()) {
+            return;
+        }
+
+        mLogFile.clear();
+        mLogFile.open(mCurrentFilePath, std::ios::out | std::ios::trunc);
+    }
+
+    void writeMessage(LogLevel level, const std::string& message) {
+        auto* const stream = level == LogLevel::Error || level == LogLevel::Fatal ? stderr : stdout;
+        const auto  line   = std::format("[{}] [{}] {}", timestamp(), levelName(level), message);
+
+        std::println(stream, "{}", line);
+        std::fflush(stream);
+
+        if (mLogFile.is_open()) {
+            mLogFile << line << '\n';
+            mLogFile.flush();
+        }
+    }
+};
+
+Logger::Logger() : Logger(std::filesystem::path{"latest.log"}) {}
+
+Logger::Logger(std::filesystem::path filePath) : mImpl(std::make_unique<Impl>(std::move(filePath))) {}
+
+Logger::~Logger() = default;
+
+void Logger::submitMessage(LogLevel level, std::string message) { mImpl->submitMessage(level, std::move(message)); }
+
+void Logger::setFile(std::filesystem::path filePath) { mImpl->submitSetFile(std::move(filePath)); }
+
+void Logger::trace(std::string message) { submitMessage(LogLevel::Trace, std::move(message)); }
+void Logger::debug(std::string message) { submitMessage(LogLevel::Debug, std::move(message)); }
+void Logger::info(std::string message) { submitMessage(LogLevel::Info, std::move(message)); }
+void Logger::warn(std::string message) { submitMessage(LogLevel::Warn, std::move(message)); }
+void Logger::error(std::string message) { submitMessage(LogLevel::Error, std::move(message)); }
+void Logger::fatal(std::string message) { submitMessage(LogLevel::Fatal, std::move(message)); }
 
 } // namespace sculk
