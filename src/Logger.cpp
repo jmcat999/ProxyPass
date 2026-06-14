@@ -28,6 +28,10 @@
 #include <thread>
 #include <utility>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace sculk {
 
 namespace {
@@ -67,6 +71,25 @@ std::string_view levelName(LogLevel level) {
     return "Unknown";
 }
 
+std::string_view colorCode(LogLevel level) {
+    switch (level) {
+    case LogLevel::Trace:
+        return "90";
+    case LogLevel::Debug:
+        return "36";
+    case LogLevel::Info:
+        return "0";
+    case LogLevel::Warn:
+        return "33";
+    case LogLevel::Error:
+        return "31";
+    case LogLevel::Fatal:
+        return "1;31";
+    }
+
+    return "0";
+}
+
 std::string timestamp() {
     const auto now      = std::chrono::floor<std::chrono::milliseconds>(std::chrono::system_clock::now());
     const auto zonedNow = std::chrono::zoned_time{std::chrono::current_zone(), now};
@@ -86,6 +109,17 @@ struct Logger::Impl {
 
     explicit Impl(std::filesystem::path filePath) {
         openFile(std::move(filePath));
+
+#ifdef _WIN32
+        HANDLE hStderr = GetStdHandle(STD_ERROR_HANDLE);
+        if (hStderr != INVALID_HANDLE_VALUE) {
+            DWORD dwMode = 0;
+            if (GetConsoleMode(hStderr, &dwMode)) {
+                SetConsoleMode(hStderr, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+            }
+        }
+#endif
+
         mWorker = std::jthread{[this](std::stop_token stopToken) { run(stopToken); }};
     }
 
@@ -155,12 +189,14 @@ struct Logger::Impl {
 
     void writeMessage(LogLevel level, const std::string& message) {
         auto* const stream = level == LogLevel::Error || level == LogLevel::Fatal ? stderr : stdout;
-        const auto  line   = std::format("[{}] [{}] {}", timestamp(), levelName(level), message);
+        const auto  ts     = timestamp();
+        const auto  name   = levelName(level);
 
-        std::println(stream, "{}", line);
+        std::println(stream, "[{}] [\033[{}m{}\033[0m] {}", ts, colorCode(level), name, message);
         std::fflush(stream);
 
         if (mLogFile.is_open()) {
+            const auto line = std::format("[{}] [{}] {}", ts, name, message);
             mLogFile << line << '\n';
             mLogFile.flush();
         }
