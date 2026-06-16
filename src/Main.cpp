@@ -24,6 +24,10 @@
 #include <print>
 
 int main() {
+    struct LoggerWaitGuard {
+        ~LoggerWaitGuard() { sculk::Logger::wait(); }
+    } loggerWaitGuard{};
+
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -44,27 +48,27 @@ int main() {
 
     sculk::protocol::AuthenticationKeyManager authKeyManager{};
     sculk::ProxySettings                      settings{};
-    sculk::Logger                             logger{};
 
+    sculk::Logger::setFile("latest.log");
     settings.load();
 
-    logger.info("[ProxyPass] Waiting for Microsoft Service...");
+    sculk::Logger("ProxyPass").info("Waiting for Microsoft Service...");
     if (auto status = authKeyManager.initMojangPublicKeyBlocking(); !status) {
-        logger.error("[ProxyPass] Failed to connect to Microsoft Service: {}", status.error().message());
+        sculk::Logger("ProxyPass").error("Failed to connect to Microsoft Service: {}", status.error().message());
         return 1;
     }
 
-    auto proxyPass = sculk::ProxyPass(authKeyManager, settings, logger);
+    auto proxyPass = sculk::ProxyPass(authKeyManager, settings);
     if (!proxyPass.start()) {
-        logger.error("[ProxyPass] Failed to start proxy server.");
+        sculk::Logger("ProxyPass").error("Failed to start proxy server.");
         return 1;
     }
-    logger.info("[ProxyPass] Proxy server started successfully.");
+    sculk::Logger("ProxyPass").info("Proxy server started successfully.");
 
     std::unique_lock waitLock{waitMutex};
     waitCv.wait(waitLock, [&] { return stopped; });
 
-    logger.info("[ProxyPass] Stopping proxy server...");
+    sculk::Logger("ProxyPass").info("Stopping proxy server...");
 
     return 0;
 }

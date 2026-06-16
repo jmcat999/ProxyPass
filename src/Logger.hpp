@@ -18,21 +18,22 @@
 #include <filesystem>
 #include <format>
 #include <memory>
+#include <semaphore>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace sculk {
 
 class Logger {
 public:
-    Logger();
-    explicit Logger(std::filesystem::path filePath);
+    explicit Logger(std::string moduleName);
     ~Logger();
 
     Logger(const Logger&)            = delete;
     Logger& operator=(const Logger&) = delete;
-    Logger(Logger&&)                 = delete;
-    Logger& operator=(Logger&&)      = delete;
+    Logger(Logger&& other) noexcept;
+    Logger& operator=(Logger&& other) noexcept;
 
     enum class LogLevel {
         Trace,
@@ -43,47 +44,55 @@ public:
         Fatal,
     };
 
+    static void setFile(std::filesystem::path filePath);
+    static void wait();
+
     template <class... Args>
-    void trace(std::format_string<Args...> format, Args&&... args) {
-        submitMessage(LogLevel::Trace, std::format(format, std::forward<Args>(args)...));
+    Logger& trace(std::format_string<Args...> format, Args&&... args) {
+        appendMessage(LogLevel::Trace, std::format(format, std::forward<Args>(args)...));
+        return *this;
     }
 
     template <class... Args>
-    void debug(std::format_string<Args...> format, Args&&... args) {
-        submitMessage(LogLevel::Debug, std::format(format, std::forward<Args>(args)...));
+    Logger& debug(std::format_string<Args...> format, Args&&... args) {
+        appendMessage(LogLevel::Debug, std::format(format, std::forward<Args>(args)...));
+        return *this;
     }
 
     template <class... Args>
-    void info(std::format_string<Args...> format, Args&&... args) {
-        submitMessage(LogLevel::Info, std::format(format, std::forward<Args>(args)...));
+    Logger& info(std::format_string<Args...> format, Args&&... args) {
+        appendMessage(LogLevel::Info, std::format(format, std::forward<Args>(args)...));
+        return *this;
     }
 
     template <class... Args>
-    void warn(std::format_string<Args...> format, Args&&... args) {
-        submitMessage(LogLevel::Warn, std::format(format, std::forward<Args>(args)...));
+    Logger& warn(std::format_string<Args...> format, Args&&... args) {
+        appendMessage(LogLevel::Warn, std::format(format, std::forward<Args>(args)...));
+        return *this;
     }
 
     template <class... Args>
-    void error(std::format_string<Args...> format, Args&&... args) {
-        submitMessage(LogLevel::Error, std::format(format, std::forward<Args>(args)...));
+    Logger& error(std::format_string<Args...> format, Args&&... args) {
+        appendMessage(LogLevel::Error, std::format(format, std::forward<Args>(args)...));
+        return *this;
     }
 
     template <class... Args>
-    void fatal(std::format_string<Args...> format, Args&&... args) {
-        submitMessage(LogLevel::Fatal, std::format(format, std::forward<Args>(args)...));
+    Logger& fatal(std::format_string<Args...> format, Args&&... args) {
+        appendMessage(LogLevel::Fatal, std::format(format, std::forward<Args>(args)...));
+        return *this;
     }
 
-    void trace(std::string message);
-    void debug(std::string message);
-    void info(std::string message);
-    void warn(std::string message);
-    void error(std::string message);
-    void fatal(std::string message);
-
-    void setFile(std::filesystem::path filePath);
+    Logger& trace(std::string message);
+    Logger& debug(std::string message);
+    Logger& info(std::string message);
+    Logger& warn(std::string message);
+    Logger& error(std::string message);
+    Logger& fatal(std::string message);
 
 private:
-    void submitMessage(LogLevel level, std::string message);
+    void appendMessage(LogLevel level, std::string message);
+    void flush() noexcept;
 
     struct Impl;
     std::unique_ptr<Impl> mImpl;

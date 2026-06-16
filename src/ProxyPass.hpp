@@ -37,14 +37,11 @@ class ProxyPass {
     const protocol::AuthenticationKeyManager&                                    mAuthManager;
     protocol::PemKeyPair                                                         mProxyServerKeyPair{};
     ProxySettings&                                                               mSettings;
-    Logger&                                                                      mLogger;
 
 public:
-    ProxyPass(protocol::AuthenticationKeyManager const& authManager, ProxySettings& settings, Logger& logger);
+    ProxyPass(protocol::AuthenticationKeyManager const& authManager, ProxySettings& settings);
 
     bool start();
-
-    Logger& getLogger() noexcept;
 
 private:
     void onClientDisconnected(const RakNet::RakNetGUID&);
