@@ -14,6 +14,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#include "Logger.hpp"
 #include "ProxyPass.hpp"
 #include <iostream>
 
@@ -27,14 +28,6 @@ int main() {
     } loggerWaitGuard{};
 
 #ifdef _WIN32
-    SetConsoleOutputCP(CP_UTF8);
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hConsole != INVALID_HANDLE_VALUE) {
-        DWORD dwMode = 0;
-        if (GetConsoleMode(hConsole, &dwMode)) {
-            SetConsoleMode(hConsole, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-        }
-    }
     SetConsoleTitle(L"ProxyPass");
 #endif
 
@@ -47,7 +40,6 @@ int main() {
     sculk::protocol::AuthenticationKeyManager authKeyManager{};
     sculk::ProxySettings                      settings{};
 
-    sculk::Logger::setFile("latest.log");
     settings.load();
 
     sculk::Logger("ProxyPass").info("Waiting for Microsoft Service...");

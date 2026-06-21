@@ -18,14 +18,15 @@
 #include <chrono>
 #include <concurrentqueue.h>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
-#include <limits>
 #include <memory>
 #include <print>
 #include <semaphore>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -49,18 +50,17 @@ struct MessageRecord {
 struct Task {
     enum class Kind {
         Message,
-        SetFile,
+        FlushFile,
+        CloseFile,
         Wait,
     } kind{Kind::Message};
 
-    LogLevel                               level{LogLevel::Info};
-    std::string                            moduleName{};
-    std::string                            message{};
-    std::filesystem::path                  filePath{};
-    std::binary_semaphore*                 completion{nullptr};
+    LogLevel               level{LogLevel::Info};
+    std::string            moduleName{};
+    std::string            message{};
+    std::filesystem::path  filePath{};
+    std::binary_semaphore* completion{nullptr};
 };
-
-constexpr auto kWakeCapacity = std::numeric_limits<std::ptrdiff_t>::max();
 
 std::string_view levelName(LogLevel level) {
     switch (level) {
@@ -101,9 +101,18 @@ std::string_view colorCode(LogLevel level) {
 }
 
 std::string timestamp() {
-    const auto now      = std::chrono::floor<std::chrono::milliseconds>(std::chrono::system_clock::now());
-    const auto zonedNow = std::chrono::zoned_time{std::chrono::current_zone(), now};
-    return std::format("{:%T}", zonedNow);
+    const auto now    = std::chrono::system_clock::now();
+    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
+    const auto time   = std::chrono::system_clock::to_time_t(now);
+    auto       local  = std::tm{};
+
+#ifdef _WIN32
+    localtime_s(&local, &time);
+#else
+    localtime_r(&time, &local);
+#endif
+
+    return std::format("{:02}:{:02}:{:02}.{:03}", local.tm_hour, local.tm_min, local.tm_sec, millis);
 }
 
 std::string formatLogLine(LogLevel level, std::string_view moduleName, std::string_view message) {
@@ -120,14 +129,33 @@ std::string formatConsoleLine(LogLevel level, std::string_view moduleName, std::
     return std::format("[{}] [\033[{}m{}\033[0m] [{}] {}", ts, colorCode(level), name, scopedModule, message);
 }
 
+std::filesystem::path absoluteLogPath(const std::filesystem::path& filePath) {
+    if (filePath.empty()) {
+        return {};
+    }
+
+    std::error_code error{};
+    auto            absolutePath = std::filesystem::absolute(filePath, error);
+    if (error) {
+        return filePath;
+    }
+    return absolutePath;
+}
+
 struct SharedBackend {
-    moodycamel::ConcurrentQueue<Task>      mQueue{};
-    std::counting_semaphore<kWakeCapacity> mWake{0};
-    std::jthread                           mWorker{};
-    std::ofstream                          mLogFile{};
+    struct LogFile {
+        std::filesystem::path path{};
+        std::ofstream         stream{};
+    };
+
+    moodycamel::ConcurrentQueue<Task> mQueue{};
+    std::counting_semaphore<>         mWake{0};
+    std::jthread                      mWorker{};
+    std::vector<LogFile>              mLogFiles{};
 
     SharedBackend() {
 #ifdef _WIN32
+        SetConsoleOutputCP(CP_UTF8);
         HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
         if (hStdout != INVALID_HANDLE_VALUE) {
             DWORD dwMode = 0;
@@ -156,20 +184,26 @@ struct SharedBackend {
         }
     }
 
-    void submitMessage(LogLevel level, std::string moduleName, std::string message) {
+    void submitMessage(LogLevel level, std::string moduleName, std::string message, std::filesystem::path filePath) {
         mQueue.enqueue(
             Task{
                 .kind       = Task::Kind::Message,
                 .level      = level,
                 .moduleName = std::move(moduleName),
                 .message    = std::move(message),
+                .filePath   = std::move(filePath),
             }
         );
         mWake.release();
     }
 
-    void submitSetFile(std::filesystem::path filePath) {
-        mQueue.enqueue(Task{.kind = Task::Kind::SetFile, .filePath = std::move(filePath)});
+    void submitFlushFile(std::filesystem::path filePath) {
+        mQueue.enqueue(Task{.kind = Task::Kind::FlushFile, .filePath = std::move(filePath)});
+        mWake.release();
+    }
+
+    void submitCloseFile(std::filesystem::path filePath) {
+        mQueue.enqueue(Task{.kind = Task::Kind::CloseFile, .filePath = std::move(filePath)});
         mWake.release();
     }
 
@@ -185,8 +219,9 @@ struct SharedBackend {
             mWake.acquire();
 
             Task task{};
-            while (mQueue.try_dequeue(task)) {
+            if (mQueue.try_dequeue(task)) {
                 handleTask(std::move(task));
+                continue;
             }
 
             if (stopToken.stop_requested()) {
@@ -194,23 +229,30 @@ struct SharedBackend {
             }
         }
 
-        if (mLogFile.is_open()) {
-            mLogFile.flush();
-            mLogFile.close();
+        for (auto& logFile : mLogFiles) {
+            if (logFile.stream.is_open()) {
+                logFile.stream.flush();
+                logFile.stream.close();
+            }
         }
     }
 
     void handleTask(Task task) {
         switch (task.kind) {
         case Task::Kind::Message:
-            emit(task.level, task.moduleName, task.message);
+            emit(task.level, task.moduleName, task.message, task.filePath);
             return;
-        case Task::Kind::SetFile:
-            setFile(std::move(task.filePath));
+        case Task::Kind::FlushFile:
+            flushFile(task.filePath);
+            return;
+        case Task::Kind::CloseFile:
+            closeFile(task.filePath);
             return;
         case Task::Kind::Wait:
-            if (mLogFile.is_open()) {
-                mLogFile.flush();
+            for (auto& logFile : mLogFiles) {
+                if (logFile.stream.is_open()) {
+                    logFile.stream.flush();
+                }
             }
             if (task.completion) {
                 task.completion->release();
@@ -219,20 +261,51 @@ struct SharedBackend {
         }
     }
 
-    void setFile(std::filesystem::path filePath) {
-        if (mLogFile.is_open()) {
-            mLogFile.flush();
-            mLogFile.close();
+    std::ofstream& streamFor(const std::filesystem::path& filePath) {
+        for (auto& logFile : mLogFiles) {
+            if (logFile.path == filePath) {
+                if (!logFile.stream.is_open()) {
+                    logFile.stream.clear();
+                    logFile.stream.open(logFile.path, std::ios::out | std::ios::app);
+                }
+                return logFile.stream;
+            }
         }
+
+        auto& logFile = mLogFiles.emplace_back(filePath, std::ofstream{});
+        logFile.stream.open(logFile.path, std::ios::out | std::ios::app);
+        return logFile.stream;
+    }
+
+    void flushFile(const std::filesystem::path& filePath) {
         if (filePath.empty()) {
             return;
         }
 
-        mLogFile.clear();
-        mLogFile.open(filePath, std::ios::out | std::ios::trunc);
+        for (auto& logFile : mLogFiles) {
+            if (logFile.path == filePath && logFile.stream.is_open()) {
+                logFile.stream.flush();
+                return;
+            }
+        }
     }
 
-    void emit(LogLevel level, std::string_view moduleName, std::string_view message) {
+    void closeFile(const std::filesystem::path& filePath) {
+        if (filePath.empty()) {
+            return;
+        }
+
+        for (auto& logFile : mLogFiles) {
+            if (logFile.path == filePath && logFile.stream.is_open()) {
+                logFile.stream.flush();
+                logFile.stream.close();
+                return;
+            }
+        }
+    }
+
+    void
+    emit(LogLevel level, std::string_view moduleName, std::string_view message, const std::filesystem::path& filePath) {
         auto* const stream  = level == LogLevel::Error || level == LogLevel::Fatal ? stderr : stdout;
         const auto  line    = formatLogLine(level, moduleName, message);
         const auto  colored = formatConsoleLine(level, moduleName, message);
@@ -240,9 +313,11 @@ struct SharedBackend {
         std::println(stream, "{}", colored);
         std::fflush(stream);
 
-        if (mLogFile.is_open()) {
-            mLogFile << line << '\n';
-            mLogFile.flush();
+        if (!filePath.empty()) {
+            auto& logFile = streamFor(filePath);
+            if (logFile.is_open()) {
+                logFile << line << '\n';
+            }
         }
     }
 };
@@ -256,12 +331,16 @@ SharedBackend& backend() {
 
 struct Logger::Impl {
     std::string                mModuleName{};
+    std::filesystem::path      mFilePath{};
     std::vector<MessageRecord> mMessages{};
 
-    explicit Impl(std::string moduleName) : mModuleName(std::move(moduleName)) {}
+    Impl(std::string moduleName, std::filesystem::path filePath)
+    : mModuleName(std::move(moduleName)),
+      mFilePath(std::move(filePath)) {}
 };
 
-Logger::Logger(std::string moduleName) : mImpl(std::make_unique<Impl>(std::move(moduleName))) {}
+Logger::Logger(std::string moduleName, std::filesystem::path filePath)
+: mImpl(std::make_unique<Impl>(std::move(moduleName), absoluteLogPath(filePath))) {}
 
 Logger::~Logger() { flush(); }
 
@@ -277,7 +356,9 @@ Logger& Logger::operator=(Logger&& other) noexcept {
     return *this;
 }
 
-void Logger::setFile(std::filesystem::path filePath) { backend().submitSetFile(std::move(filePath)); }
+void Logger::flushFile(std::filesystem::path filePath) { backend().submitFlushFile(absoluteLogPath(filePath)); }
+
+void Logger::closeFile(std::filesystem::path filePath) { backend().submitCloseFile(absoluteLogPath(filePath)); }
 
 void Logger::wait() { backend().wait(); }
 
@@ -295,9 +376,27 @@ void Logger::flush() noexcept {
     }
 
     for (auto& message : mImpl->mMessages) {
-        backend().submitMessage(message.level, mImpl->mModuleName, std::move(message.message));
+        backend().submitMessage(message.level, mImpl->mModuleName, std::move(message.message), mImpl->mFilePath);
     }
     mImpl->mMessages.clear();
+}
+
+void Logger::flushFile() {
+    if (!mImpl) {
+        return;
+    }
+
+    flush();
+    backend().submitFlushFile(mImpl->mFilePath);
+}
+
+void Logger::closeFile() {
+    if (!mImpl) {
+        return;
+    }
+
+    flush();
+    backend().submitCloseFile(mImpl->mFilePath);
 }
 
 Logger& Logger::trace(std::string message) {

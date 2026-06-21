@@ -18,16 +18,14 @@
 #include <filesystem>
 #include <format>
 #include <memory>
-#include <semaphore>
 #include <string>
-#include <string_view>
 #include <utility>
 
 namespace sculk {
 
 class Logger {
 public:
-    explicit Logger(std::string moduleName);
+    explicit Logger(std::string moduleName, std::filesystem::path filePath = "latest.log");
     ~Logger();
 
     Logger(const Logger&)            = delete;
@@ -44,7 +42,6 @@ public:
         Fatal,
     };
 
-    static void setFile(std::filesystem::path filePath);
     static void wait();
 
     template <class... Args>
@@ -89,6 +86,12 @@ public:
     Logger& warn(std::string message);
     Logger& error(std::string message);
     Logger& fatal(std::string message);
+
+    void flushFile();
+    void closeFile();
+
+    static void flushFile(std::filesystem::path filePath);
+    static void closeFile(std::filesystem::path filePath);
 
 private:
     void appendMessage(LogLevel level, std::string message);

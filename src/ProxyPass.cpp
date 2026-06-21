@@ -15,6 +15,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "ProxyPass.hpp"
+#include "Logger.hpp"
 #include <sculk/protocol/codec/MinecraftPackets.hpp>
 #include <sculk/protocol/codec/packet/ClientToServerHandshakePacket.hpp>
 #include <sculk/protocol/codec/packet/DisconnectPacket.hpp>
@@ -39,25 +40,32 @@ bool ProxyPass::start() {
     }
     mProxyServerKeyPair = *serverKeyPair;
 
-    (void)mProxyServer.setOnDisconnected([this](const RakNet::RakNetGUID& guid, const RakNet::SystemAddress&) noexcept {
-        onClientDisconnected(guid);
-    });
+    if (!mProxyServer.setOnDisconnected([this](const RakNet::RakNetGUID& guid, const RakNet::SystemAddress&) noexcept {
+            onClientDisconnected(guid);
+        })) [[unlikely]] {
+        Logger("ProxyPass").error("Failed to set proxy server disconnect callback.");
+        return false;
+    }
 
-    (void)mProxyServer.setOnPacketReceive([this](
-                                              const RakNet::RakNetGUID&            guid,
-                                              const RakNet::SystemAddress&         address,
-                                              std::unique_ptr<protocol::IPacket>&& packet
-                                          ) noexcept { onRealClientPacket(guid, address, *packet); });
+    if (!mProxyServer.setOnPacketReceive([this](
+                                             const RakNet::RakNetGUID&            guid,
+                                             const RakNet::SystemAddress&         address,
+                                             std::unique_ptr<protocol::IPacket>&& packet
+                                         ) noexcept { onRealClientPacket(guid, address, *packet); })) [[unlikely]] {
+        Logger("ProxyPass").error("Failed to set proxy server packet receive callback.");
+        return false;
+    }
 
     if (mSettings.packets_logger->log_parse_error) {
-        (void)mProxyServer.setOnPacketParseFailed([this](
-                                                      const RakNet::RakNetGUID&,
-                                                      const RakNet::SystemAddress&,
-                                                      protocol::Session::Buffer&&,
-                                                      std::string message
-                                                  ) noexcept {
-            Logger("ProxyPass").error("Failed to parse packet from {}", message);
-        });
+        if (!mProxyServer.setOnPacketParseFailed([](const RakNet::RakNetGUID&,
+                                                    const RakNet::SystemAddress&,
+                                                    protocol::Session::Buffer&&,
+                                                    std::string message) noexcept {
+                Logger("ProxyPass").error("Failed to parse packet: {}", message);
+            })) [[unlikely]] {
+            Logger("ProxyPass").error("Failed to set proxy server packet parse failure callback.");
+            return false;
+        }
     }
 
     mProxyServer.setMotd(mSettings.motd);
@@ -272,66 +280,76 @@ void ProxyPass::handleFirstClientPacket(
 
     std::weak_ptr<ProxyBridge> weakBridge = bridge;
 
-    (void)bridge->mProxyClient.setOnPacketReceive([this,
-                                                   weakBridge](std::unique_ptr<protocol::IPacket>&& packet) noexcept {
-        auto currentBridge = weakBridge.lock();
-        if (!currentBridge) {
-            return;
-        }
-        processServerPacket(*currentBridge, *packet);
-    });
-
-    if (mSettings.packets_logger->log_parse_error) {
-        (void)bridge->mProxyClient.setOnPacketParseFailed(
-            [this](protocol::Session::Buffer&&, std::string message) noexcept {
-                Logger("ProxyPass").error("Failed to parse packet: {}", message);
+    if (!bridge->mProxyClient.setOnPacketReceive([this,
+                                                  weakBridge](std::unique_ptr<protocol::IPacket>&& packet) noexcept {
+            auto currentBridge = weakBridge.lock();
+            if (!currentBridge) {
+                return;
             }
-        );
+            processServerPacket(*currentBridge, *packet);
+        })) [[unlikely]] {
+        Logger("ProxyPass").error("Failed to set upstream packet receive callback.");
+        return;
     }
 
-    (void)bridge->mProxyClient.setOnConnected([this, weakBridge]() noexcept {
-        auto currentBridge = weakBridge.lock();
-        if (!currentBridge) {
+    if (mSettings.packets_logger->log_parse_error) {
+        if (!bridge->mProxyClient.setOnPacketParseFailed([](protocol::Session::Buffer&&, std::string message) noexcept {
+                Logger("ProxyPass").error("Failed to parse packet: {}", message);
+            })) [[unlikely]] {
+            Logger("ProxyPass").error("Failed to set upstream packet parse failure callback.");
             return;
         }
+    }
 
-        if (!currentBridge->mClientReady.load(std::memory_order_acquire)) {
-            return;
-        }
+    if (!bridge->mProxyClient.setOnConnected([this, weakBridge]() noexcept {
+            auto currentBridge = weakBridge.lock();
+            if (!currentBridge) {
+                return;
+            }
 
-        auto pkt = protocol::RequestNetworkSettingsPacket{};
-        currentBridge->sendPacketToServer(pkt, true);
-        if (PROXY_PASS_SHOULD_LOG_PACKET(pkt.getId())) {
-            Logger("ProxyPass").info("Proxy => Server | {}", pkt);
-        }
+            if (!currentBridge->mClientReady.load(std::memory_order_acquire)) {
+                return;
+            }
 
-        currentBridge->mClientReady.store(true, std::memory_order_release);
-    });
+            auto pkt = protocol::RequestNetworkSettingsPacket{};
+            currentBridge->sendPacketToServer(pkt, true);
+            if (PROXY_PASS_SHOULD_LOG_PACKET(pkt.getId())) {
+                Logger("ProxyPass").info("Proxy => Server | {}", pkt);
+            }
 
-    (void)bridge->mProxyClient.setOnConnectionFailed([this, weakBridge]() noexcept {
-        auto currentBridge = weakBridge.lock();
-        if (!currentBridge) {
-            return;
-        }
+            currentBridge->mClientReady.store(true, std::memory_order_release);
+        })) [[unlikely]] {
+        Logger("ProxyPass").error("Failed to set upstream connected callback.");
+        return;
+    }
 
-        Logger("ProxyPass")
-            .info(
-                "Failed to connect to upstream server for player: {}.",
-                currentBridge->mConnectionRequest.getXboxLiveName()
-            )
-            .info(
-                "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
-                currentBridge->mRealAddress.ToString(),
-                currentBridge->mClientInfo.name,
-                currentBridge->mClientInfo.xuid.empty() ? "N/A" : currentBridge->mClientInfo.xuid,
-                currentBridge->mClientInfo.pfid.empty() ? "N/A" : currentBridge->mClientInfo.pfid
+    if (!bridge->mProxyClient.setOnConnectionFailed([this, weakBridge]() noexcept {
+            auto currentBridge = weakBridge.lock();
+            if (!currentBridge) {
+                return;
+            }
+
+            Logger("ProxyPass")
+                .info(
+                    "Failed to connect to upstream server for player: {}.",
+                    currentBridge->mConnectionRequest.getXboxLiveName()
+                )
+                .info(
+                    "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
+                    currentBridge->mRealAddress.ToString(),
+                    currentBridge->mClientInfo.name,
+                    currentBridge->mClientInfo.xuid.empty() ? "N/A" : currentBridge->mClientInfo.xuid,
+                    currentBridge->mClientInfo.pfid.empty() ? "N/A" : currentBridge->mClientInfo.pfid
+                );
+            disconnectClient(
+                currentBridge->mRealGuid,
+                "Failed to connect to upstream server",
+                protocol::DisconnectFailReason::CantConnect
             );
-        disconnectClient(
-            currentBridge->mRealGuid,
-            "Failed to connect to upstream server",
-            protocol::DisconnectFailReason::CantConnect
-        );
-    });
+        })) [[unlikely]] {
+        Logger("ProxyPass").error("Failed to set upstream connection failure callback.");
+        return;
+    }
 
     if (!bridge->mProxyClient.connect(mSettings.upstream_host, mSettings.upstream_port)) {
         Logger("ProxyPass")
@@ -394,7 +412,14 @@ void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::NetworkSetting
         Logger("ProxyPass").info("Server => Proxy | {}", packet);
     }
     bridge.mProxyClient.getSession().setCompressed(packet.mCompressionAlgorithm, packet.mCompressionThreshold);
-    (void)bridge.mConnectionRequest.selfSign(mProxyServerKeyPair);
+    if (auto status = bridge.mConnectionRequest.selfSign(mProxyServerKeyPair); !status) [[unlikely]] {
+        Logger("ProxyPass").error("Failed to sign upstream login token: {}", status.error().message());
+        return disconnectClient(
+            bridge.mRealGuid,
+            "Failed to sign upstream login token",
+            protocol::DisconnectFailReason::BadPacket
+        );
+    }
     protocol::LoginPacket loginPacket{bridge.mConnectionRequest.toString()};
 
     bridge.sendPacketToServer(loginPacket, true);
