@@ -18,6 +18,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(ProxyPass LANGUAGES CXX)
 
+enable_testing()
+
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL ON)
@@ -27,6 +29,7 @@ set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
 include(FetchContent)
 set(PROTOCOL_ENABLE_FORMATTING ON CACHE BOOL "Enable formatting support in Protocol")
+set(PROTOCOL_ENABLE_DETAIL_ERRORS ON CACHE BOOL "Enable detail errors in Protocol")
 FetchContent_Declare(
 	Protocol
 	GIT_REPOSITORY https://github.com/SculkCatalystMC/Protocol.git
@@ -42,7 +45,13 @@ FetchContent_Declare(
 	GIT_REPOSITORY https://github.com/greg7mdp/parallel-hashmap.git
 	GIT_TAG v2.0.0
 )
-FetchContent_MakeAvailable(Protocol reflection parallel_hashmap)
+FetchContent_Declare(
+	concurrentqueue
+	GIT_REPOSITORY https://github.com/cameron314/concurrentqueue.git
+	GIT_TAG v1.0.4
+)
+find_package(OpenSSL REQUIRED)
+FetchContent_MakeAvailable(Protocol reflection parallel_hashmap concurrentqueue)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,6 +65,7 @@ add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 
 target_include_directories(${PROJECT_NAME} PUBLIC
 	$<BUILD_INTERFACE:${parallel_hashmap_SOURCE_DIR}>
+	$<BUILD_INTERFACE:${concurrentqueue_SOURCE_DIR}>
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -127,3 +137,46 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 	LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BIN_DIR}"
 	ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_LIB_DIR}"
 )
+
+add_executable(LoggerTests
+	"${CMAKE_CURRENT_SOURCE_DIR}/tests/LoggerTests.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/Logger.cpp"
+)
+
+target_include_directories(LoggerTests PRIVATE
+	"${CMAKE_CURRENT_SOURCE_DIR}/src"
+	$<BUILD_INTERFACE:${parallel_hashmap_SOURCE_DIR}>
+	$<BUILD_INTERFACE:${concurrentqueue_SOURCE_DIR}>
+)
+
+target_compile_features(LoggerTests PUBLIC cxx_std_23)
+
+if(MSVC)
+	target_compile_options(LoggerTests PRIVATE
+		/W4
+		/utf-8
+		/GR-
+		/Zc:preprocessor
+		/permissive-
+		/EHs-c-
+	)
+	target_compile_definitions(LoggerTests PRIVATE
+		UNICODE
+		NOMINMAX
+		_HAS_EXCEPTIONS=0
+	)
+else()
+	target_compile_options(LoggerTests PRIVATE
+		-Wall
+		-Wextra
+		-Wpedantic
+		-fno-rtti
+		-fno-exceptions
+	)
+endif()
+
+set_target_properties(LoggerTests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
+add_test(NAME LoggerTests COMMAND LoggerTests)

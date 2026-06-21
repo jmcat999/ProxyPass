@@ -59,6 +59,17 @@ struct ProxySettings {
         COMMENT("Settings for packets logger", "数据包记录设置"),
         CONFIG(
             bool,
+            log_parse_error = false,
+            COMMENT(
+                "Whether to log parse errors for packets logger",
+                "It should not normally occur, this option is usually only used during protocol development and "
+                "testing.",
+                "数据包记录是否启用解析错误记录",
+                "正常情况下不应该发生解析错误，此选项通常仅在协议开发测试使用。"
+            )
+        );
+        CONFIG(
+            bool,
             black_list_mode = false,
             COMMENT("Whether to use black list mode for packets logger", "数据包记录是否启用黑名单模式")
         );

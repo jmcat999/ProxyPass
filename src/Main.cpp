@@ -14,6 +14,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#include "Logger.hpp"
 #include "ProxyPass.hpp"
 #include <iostream>
 
@@ -21,18 +22,12 @@
 #include <windows.h>
 #endif
 
-#include <print>
-
 int main() {
+    struct LoggerWaitGuard {
+        ~LoggerWaitGuard() { sculk::Logger::wait(); }
+    } loggerWaitGuard{};
+
 #ifdef _WIN32
-    SetConsoleOutputCP(CP_UTF8);
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hConsole != INVALID_HANDLE_VALUE) {
-        DWORD dwMode = 0;
-        if (GetConsoleMode(hConsole, &dwMode)) {
-            SetConsoleMode(hConsole, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-        }
-    }
     SetConsoleTitle(L"ProxyPass");
 #endif
 
@@ -47,23 +42,23 @@ int main() {
 
     settings.load();
 
-    std::println("[ProxyPass] Waiting for Microsoft Service...");
+    sculk::Logger("ProxyPass").info("Waiting for Microsoft Service...");
     if (auto status = authKeyManager.initMojangPublicKeyBlocking(); !status) {
-        std::println(stderr, "[ProxyPass] Failed to connect to Microsoft Service: {}", status.error().message());
+        sculk::Logger("ProxyPass").error("Failed to connect to Microsoft Service: {}", status.error().message());
         return 1;
     }
 
     auto proxyPass = sculk::ProxyPass(authKeyManager, settings);
     if (!proxyPass.start()) {
-        std::println(stderr, "[ProxyPass] Failed to start proxy server.");
+        sculk::Logger("ProxyPass").error("Failed to start proxy server.");
         return 1;
     }
-    std::println("[ProxyPass] Proxy server started successfully.");
+    sculk::Logger("ProxyPass").info("Proxy server started successfully.");
 
     std::unique_lock waitLock{waitMutex};
     waitCv.wait(waitLock, [&] { return stopped; });
 
-    std::println("[ProxyPass] Stopping proxy server...");
+    sculk::Logger("ProxyPass").info("Stopping proxy server...");
 
     return 0;
 }

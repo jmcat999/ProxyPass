@@ -3,7 +3,7 @@
 
 MITM proxy tool for `Minecraft: Bedrock Edition`
 
-![Protocol Version](https://img.shields.io/badge/Bedrock-v975%20%7C%2026.20-30ffee?style=flat-square)
+![Protocol Version](https://img.shields.io/badge/Bedrock-v1001%20%7C%2026.30-30ffee?style=flat-square)
 ![C++23](https://img.shields.io/badge/C++-23-blue?logo=C%2B%2B&logoColor=41a3ed)
 
 
