@@ -583,7 +583,9 @@ void ProxyPass::shutdown() {
 void ProxyPass::waitForStop() {
     std::string command{};
     while (true) {
-        std::cin >> command;
+        if (!(std::cin >> command)) {
+            break;
+        }
         if (command == "stop") {
             shutdown();
             break;
