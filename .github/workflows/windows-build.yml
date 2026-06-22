@@ -1,0 +1,62 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-windows:
+    name: Build ProxyPass on Windows
+    runs-on: windows-latest
+
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install OpenSSL with vcpkg
+        shell: pwsh
+        run: |
+          vcpkg install openssl:x64-windows
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build Release
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+
+          $exe = Get-ChildItem -Path . -Recurse -Filter ProxyPass.exe | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "ProxyPass.exe not found"
+            exit 1
+          }
+          Copy-Item $exe.FullName artifact\ProxyPass.exe -Force
+
+          $vcpkgBin = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows\bin"
+          if (Test-Path $vcpkgBin) {
+            Get-ChildItem $vcpkgBin -Filter *.dll | ForEach-Object {
+              Copy-Item $_.FullName artifact\ -Force
+            }
+          }
+
+          Get-ChildItem artifact
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProxyPass-windows-x64
+          path: artifact/*
