@@ -9,7 +9,7 @@ on:
 jobs:
   build-windows:
     name: Build ProxyPass on Windows
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
@@ -18,21 +18,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install OpenSSL with vcpkg
+      - name: Setup MSVC developer shell
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install build dependencies
         shell: pwsh
         run: |
+          choco install ninja -y
           vcpkg install openssl:x64-windows
 
       - name: Configure CMake
         shell: pwsh
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build Release
         shell: pwsh
         run: |
-          cmake --build build --config Release --parallel
+          cmake --build build --parallel
 
       - name: Collect artifacts
         shell: pwsh
