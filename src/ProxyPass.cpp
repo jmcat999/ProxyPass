@@ -28,10 +28,11 @@ namespace sculk {
     (mSettings.packets_logger->black_list_mode && !mSettings.packets_logger->packet_ids->contains(ID))                 \
         || (!mSettings.packets_logger->black_list_mode && mSettings.packets_logger->packet_ids->contains(ID))
 
-ProxyPass::ProxyPass(protocol::AuthenticationKeyManager const& authManager, ProxySettings& settings)
+ProxyPass::ProxyPass(protocol::AuthenticationKeyManager const& authManager, ProxySettings& settings, Logger& logger)
 : mProxyServer(1),
   mAuthManager(authManager),
-  mSettings(settings) {}
+  mSettings(settings),
+  mLogger(logger) {}
 
 bool ProxyPass::start() {
     auto serverKeyPair = protocol::ssl::randomES384KeyPair();
@@ -43,7 +44,7 @@ bool ProxyPass::start() {
     if (!mProxyServer.setOnDisconnected([this](const RakNet::RakNetGUID& guid, const RakNet::SystemAddress&) noexcept {
             onClientDisconnected(guid);
         })) [[unlikely]] {
-        Logger("ProxyPass").error("Failed to set proxy server disconnect callback.");
+        getLogger().error("Failed to set proxy server disconnect callback.");
         return false;
     }
 
@@ -52,18 +53,20 @@ bool ProxyPass::start() {
                                              const RakNet::SystemAddress&         address,
                                              std::unique_ptr<protocol::IPacket>&& packet
                                          ) noexcept { onRealClientPacket(guid, address, *packet); })) [[unlikely]] {
-        Logger("ProxyPass").error("Failed to set proxy server packet receive callback.");
+        getLogger().error("Failed to set proxy server packet receive callback.");
         return false;
     }
 
     if (mSettings.packets_logger->log_parse_error) {
-        if (!mProxyServer.setOnPacketParseFailed([](const RakNet::RakNetGUID&,
-                                                    const RakNet::SystemAddress&,
-                                                    protocol::Session::Buffer&&,
-                                                    std::string message) noexcept {
-                Logger("ProxyPass").error("Failed to parse packet: {}", message);
+        if (!mProxyServer.setOnPacketParseFailed([this](
+                                                     const RakNet::RakNetGUID&,
+                                                     const RakNet::SystemAddress&,
+                                                     protocol::Session::Buffer&&,
+                                                     std::string message
+                                                 ) noexcept {
+                getLogger().error("Failed to parse packet: {}", message);
             })) [[unlikely]] {
-            Logger("ProxyPass").error("Failed to set proxy server packet parse failure callback.");
+            getLogger().error("Failed to set proxy server packet parse failure callback.");
             return false;
         }
     }
@@ -129,14 +132,13 @@ void ProxyPass::onClientDisconnected(const RakNet::RakNetGUID& guid) {
     if (bridge->mProxyClient.isConnected()) {
         bridge->mProxyClient.disconnect();
     }
-    Logger("ProxyPass")
-        .info(
-            "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
-            bridge->mRealAddress.ToString(),
-            bridge->mClientInfo.name,
-            bridge->mClientInfo.xuid.empty() ? "N/A" : bridge->mClientInfo.xuid,
-            bridge->mClientInfo.pfid.empty() ? "N/A" : bridge->mClientInfo.pfid
-        );
+    getLogger().info(
+        "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
+        bridge->mRealAddress.ToString(),
+        bridge->mClientInfo.name,
+        bridge->mClientInfo.xuid.empty() ? "N/A" : bridge->mClientInfo.xuid,
+        bridge->mClientInfo.pfid.empty() ? "N/A" : bridge->mClientInfo.pfid
+    );
 }
 
 void ProxyPass::processClientPacket(ProxyBridge& bridge, const protocol::IPacket& packet) {
@@ -147,13 +149,13 @@ void ProxyPass::processClientPacket(ProxyBridge& bridge, const protocol::IPacket
     }
     case protocol::MinecraftPacketIds::ClientToServerHandshake: {
         if (PROXY_PASS_SHOULD_LOG_PACKET(id)) {
-            Logger("ProxyPass").info("Client => Proxy | {}", packet);
+            getLogger().info("Client => Proxy | {}", packet);
         }
         if (bridge.mRealClientSession.isConnected()) {
             auto pkt = protocol::RequestNetworkSettingsPacket{};
             bridge.sendPacketToServer(pkt, true);
             if (PROXY_PASS_SHOULD_LOG_PACKET(id)) {
-                Logger("ProxyPass").info("Proxy => Server | {}", pkt);
+                getLogger().info("Proxy => Server | {}", pkt);
             }
         }
         bridge.mClientReady.store(true, std::memory_order_release);
@@ -161,7 +163,7 @@ void ProxyPass::processClientPacket(ProxyBridge& bridge, const protocol::IPacket
     }
     default: {
         if (PROXY_PASS_SHOULD_LOG_PACKET(id)) {
-            Logger("ProxyPass").info("Client => Proxy => Server | {}", packet);
+            getLogger().info("Client => Proxy => Server | {}", packet);
         }
         bridge.sendPacketToServer(packet);
         break;
@@ -171,7 +173,7 @@ void ProxyPass::processClientPacket(ProxyBridge& bridge, const protocol::IPacket
 
 void ProxyPass::handleClient(protocol::Session& session, const protocol::RequestNetworkSettingsPacket& packet) {
     if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::RequestNetworkSettings)) {
-        Logger("ProxyPass").info("Client => Proxy | {}", packet);
+        getLogger().info("Client => Proxy | {}", packet);
     }
     if (packet.mClientNetworkVersion != protocol::getProtocolVersion()) {
         if (packet.mClientNetworkVersion > protocol::getProtocolVersion()) {
@@ -185,7 +187,7 @@ void ProxyPass::handleClient(protocol::Session& session, const protocol::Request
     protocol::BinaryStream          stream{buffer};
     settingsPacket.writeWithHeader(stream);
     if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::NetworkSettings)) {
-        Logger("ProxyPass").info("Proxy => Client | {}", settingsPacket);
+        getLogger().info("Proxy => Client | {}", settingsPacket);
     }
     session.sendPacketImmediately(std::move(buffer));
     session.setCompressed(settingsPacket.mCompressionAlgorithm, settingsPacket.mCompressionThreshold);
@@ -193,7 +195,7 @@ void ProxyPass::handleClient(protocol::Session& session, const protocol::Request
 
 void ProxyPass::handleClient(ProxyBridge& bridge, const protocol::LoginPacket& packet) {
     if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::Login)) {
-        Logger("ProxyPass").info("Client => Proxy | {}", packet);
+        getLogger().info("Client => Proxy | {}", packet);
     }
 
     if (packet.mNetworkVersion != protocol::getProtocolVersion()) {
@@ -238,7 +240,7 @@ void ProxyPass::handleClient(ProxyBridge& bridge, const protocol::LoginPacket& p
 
     bridge.sendPacketToClient(handshakePacket, true);
     if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::ServerToClientHandshake)) {
-        Logger("ProxyPass").info("Proxy => Client | {}", handshakePacket);
+        getLogger().info("Proxy => Client | {}", handshakePacket);
     }
 
     auto sessionToken = protocol::CryptoManager::computeSessionKey(
@@ -254,14 +256,13 @@ void ProxyPass::handleClient(ProxyBridge& bridge, const protocol::LoginPacket& p
         );
     }
     bridge.mRealClientSession.setEncrypted(std::move(*sessionToken));
-    Logger("ProxyPass")
-        .info(
-            "[{}] Player connected: {}, xuid: {}, pfid: {}",
-            bridge.mRealAddress.ToString(),
-            bridge.mClientInfo.name,
-            bridge.mClientInfo.xuid.empty() ? "N/A" : bridge.mClientInfo.xuid,
-            bridge.mClientInfo.pfid.empty() ? "N/A" : bridge.mClientInfo.pfid
-        );
+    getLogger().info(
+        "[{}] Player connected: {}, xuid: {}, pfid: {}",
+        bridge.mRealAddress.ToString(),
+        bridge.mClientInfo.name,
+        bridge.mClientInfo.xuid.empty() ? "N/A" : bridge.mClientInfo.xuid,
+        bridge.mClientInfo.pfid.empty() ? "N/A" : bridge.mClientInfo.pfid
+    );
 }
 
 void ProxyPass::handleFirstClientPacket(
@@ -288,15 +289,17 @@ void ProxyPass::handleFirstClientPacket(
             }
             processServerPacket(*currentBridge, *packet);
         })) [[unlikely]] {
-        Logger("ProxyPass").error("Failed to set upstream packet receive callback.");
+        getLogger().error("Failed to set upstream packet receive callback.");
         return;
     }
 
     if (mSettings.packets_logger->log_parse_error) {
-        if (!bridge->mProxyClient.setOnPacketParseFailed([](protocol::Session::Buffer&&, std::string message) noexcept {
-                Logger("ProxyPass").error("Failed to parse packet: {}", message);
-            })) [[unlikely]] {
-            Logger("ProxyPass").error("Failed to set upstream packet parse failure callback.");
+        if (!bridge->mProxyClient.setOnPacketParseFailed(
+                [this](protocol::Session::Buffer&&, std::string message) noexcept {
+                    getLogger().error("Failed to parse packet: {}", message);
+                }
+            )) [[unlikely]] {
+            getLogger().error("Failed to set upstream packet parse failure callback.");
             return;
         }
     }
@@ -314,12 +317,12 @@ void ProxyPass::handleFirstClientPacket(
             auto pkt = protocol::RequestNetworkSettingsPacket{};
             currentBridge->sendPacketToServer(pkt, true);
             if (PROXY_PASS_SHOULD_LOG_PACKET(pkt.getId())) {
-                Logger("ProxyPass").info("Proxy => Server | {}", pkt);
+                getLogger().info("Proxy => Server | {}", pkt);
             }
 
             currentBridge->mClientReady.store(true, std::memory_order_release);
         })) [[unlikely]] {
-        Logger("ProxyPass").error("Failed to set upstream connected callback.");
+        getLogger().error("Failed to set upstream connected callback.");
         return;
     }
 
@@ -329,38 +332,39 @@ void ProxyPass::handleFirstClientPacket(
                 return;
             }
 
-            Logger("ProxyPass")
-                .info(
-                    "Failed to connect to upstream server for player: {}.",
-                    currentBridge->mConnectionRequest.getXboxLiveName()
-                )
-                .info(
-                    "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
-                    currentBridge->mRealAddress.ToString(),
-                    currentBridge->mClientInfo.name,
-                    currentBridge->mClientInfo.xuid.empty() ? "N/A" : currentBridge->mClientInfo.xuid,
-                    currentBridge->mClientInfo.pfid.empty() ? "N/A" : currentBridge->mClientInfo.pfid
-                );
+            getLogger().info(
+                "Failed to connect to upstream server for player: {}.",
+                currentBridge->mConnectionRequest.getXboxLiveName()
+            );
+            getLogger().info(
+                "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
+                currentBridge->mRealAddress.ToString(),
+                currentBridge->mClientInfo.name,
+                currentBridge->mClientInfo.xuid.empty() ? "N/A" : currentBridge->mClientInfo.xuid,
+                currentBridge->mClientInfo.pfid.empty() ? "N/A" : currentBridge->mClientInfo.pfid
+            );
             disconnectClient(
                 currentBridge->mRealGuid,
                 "Failed to connect to upstream server",
                 protocol::DisconnectFailReason::CantConnect
             );
         })) [[unlikely]] {
-        Logger("ProxyPass").error("Failed to set upstream connection failure callback.");
+        getLogger().error("Failed to set upstream connection failure callback.");
         return;
     }
 
     if (!bridge->mProxyClient.connect(mSettings.upstream_host, mSettings.upstream_port)) {
-        Logger("ProxyPass")
-            .info("Failed to connect to upstream server for player: {}.", bridge->mConnectionRequest.getXboxLiveName())
-            .info(
-                "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
-                bridge->mRealAddress.ToString(),
-                bridge->mClientInfo.name,
-                bridge->mClientInfo.xuid.empty() ? "N/A" : bridge->mClientInfo.xuid,
-                bridge->mClientInfo.pfid.empty() ? "N/A" : bridge->mClientInfo.pfid
-            );
+        getLogger().info(
+            "Failed to connect to upstream server for player: {}.",
+            bridge->mConnectionRequest.getXboxLiveName()
+        );
+        getLogger().info(
+            "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
+            bridge->mRealAddress.ToString(),
+            bridge->mClientInfo.name,
+            bridge->mClientInfo.xuid.empty() ? "N/A" : bridge->mClientInfo.xuid,
+            bridge->mClientInfo.pfid.empty() ? "N/A" : bridge->mClientInfo.pfid
+        );
         disconnectClient(guid, "Failed to connect to upstream server", protocol::DisconnectFailReason::CantConnect);
         return;
     }
@@ -399,7 +403,7 @@ void ProxyPass::processServerPacket(ProxyBridge& bridge, const protocol::IPacket
     }
     default: {
         if (PROXY_PASS_SHOULD_LOG_PACKET(id)) {
-            Logger("ProxyPass").info("Server => Proxy => Client | {}", packet);
+            getLogger().info("Server => Proxy => Client | {}", packet);
         }
         bridge.sendPacketToClient(packet);
         break;
@@ -409,11 +413,11 @@ void ProxyPass::processServerPacket(ProxyBridge& bridge, const protocol::IPacket
 
 void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::NetworkSettingsPacket& packet) {
     if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::NetworkSettings)) {
-        Logger("ProxyPass").info("Server => Proxy | {}", packet);
+        getLogger().info("Server => Proxy | {}", packet);
     }
     bridge.mProxyClient.getSession().setCompressed(packet.mCompressionAlgorithm, packet.mCompressionThreshold);
     if (auto status = bridge.mConnectionRequest.selfSign(mProxyServerKeyPair); !status) [[unlikely]] {
-        Logger("ProxyPass").error("Failed to sign upstream login token: {}", status.error().message());
+        getLogger().error("Failed to sign upstream login token: {}", status.error().message());
         return disconnectClient(
             bridge.mRealGuid,
             "Failed to sign upstream login token",
@@ -424,24 +428,23 @@ void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::NetworkSetting
 
     bridge.sendPacketToServer(loginPacket, true);
     if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::Login)) {
-        Logger("ProxyPass").info("Proxy => Server | {}", loginPacket);
+        getLogger().info("Proxy => Server | {}", loginPacket);
     }
 }
 
 void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::ServerToClientHandshakePacket& packet) {
     if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::ServerToClientHandshake)) {
-        Logger("ProxyPass").info("Server => Proxy | {}", packet);
+        getLogger().info("Server => Proxy | {}", packet);
     }
     auto handshakeToken = protocol::HandShakeToken::fromString(packet.mHandshakeWebToken);
     if (!handshakeToken || !handshakeToken->verify()) {
-        Logger("ProxyPass")
-            .info(
-                "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
-                bridge.mRealAddress.ToString(),
-                bridge.mClientInfo.name,
-                bridge.mClientInfo.xuid.empty() ? "N/A" : bridge.mClientInfo.xuid,
-                bridge.mClientInfo.pfid.empty() ? "N/A" : bridge.mClientInfo.pfid
-            );
+        getLogger().info(
+            "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
+            bridge.mRealAddress.ToString(),
+            bridge.mClientInfo.name,
+            bridge.mClientInfo.xuid.empty() ? "N/A" : bridge.mClientInfo.xuid,
+            bridge.mClientInfo.pfid.empty() ? "N/A" : bridge.mClientInfo.pfid
+        );
         return disconnectClient(bridge.mRealGuid, "Invalid handshake token", protocol::DisconnectFailReason::BadPacket);
     }
 
@@ -451,14 +454,13 @@ void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::ServerToClient
         handshakeToken->getSaltBytes()
     );
     if (!sessionKey) {
-        Logger("ProxyPass")
-            .info(
-                "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
-                bridge.mRealAddress.ToString(),
-                bridge.mClientInfo.name,
-                bridge.mClientInfo.xuid.empty() ? "N/A" : bridge.mClientInfo.xuid,
-                bridge.mClientInfo.pfid.empty() ? "N/A" : bridge.mClientInfo.pfid
-            );
+        getLogger().info(
+            "[{}] Player disconnected: {}, xuid: {}, pfid: {}",
+            bridge.mRealAddress.ToString(),
+            bridge.mClientInfo.name,
+            bridge.mClientInfo.xuid.empty() ? "N/A" : bridge.mClientInfo.xuid,
+            bridge.mClientInfo.pfid.empty() ? "N/A" : bridge.mClientInfo.pfid
+        );
         return disconnectClient(
             bridge.mRealGuid,
             "Failed to compute server session key",
@@ -469,7 +471,7 @@ void ProxyPass::handleServer(ProxyBridge& bridge, const protocol::ServerToClient
     protocol::ClientToServerHandshakePacket handshakePacket{};
     bridge.sendPacketToServer(handshakePacket, true);
     if (PROXY_PASS_SHOULD_LOG_PACKET(protocol::MinecraftPacketIds::ClientToServerHandshake)) {
-        Logger("ProxyPass").info("Proxy => Server | {}", handshakePacket);
+        getLogger().info("Proxy => Server | {}", handshakePacket);
     }
 }
 

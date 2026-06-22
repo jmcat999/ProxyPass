@@ -17,21 +17,37 @@
 #include "Logger.hpp"
 #include "ProxyPass.hpp"
 #include <iostream>
+#include <print>
 
 #ifdef _WIN32
-#include <windows.h>
+#include <Windows.h>
 #endif
+
+void initConsole() {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hStdout != INVALID_HANDLE_VALUE) {
+        DWORD dwMode = 0;
+        if (GetConsoleMode(hStdout, &dwMode)) {
+            SetConsoleMode(hStdout, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        }
+    }
+
+    HANDLE hStderr = GetStdHandle(STD_ERROR_HANDLE);
+    if (hStderr != INVALID_HANDLE_VALUE) {
+        DWORD dwMode = 0;
+        if (GetConsoleMode(hStderr, &dwMode)) {
+            SetConsoleMode(hStderr, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        }
+    }
+#endif
+    std::ios::sync_with_stdio(false);
+    std::print("\033]0;{}\007", "ProxyPass");
+}
 
 int main() {
-    struct LoggerWaitGuard {
-        ~LoggerWaitGuard() { sculk::Logger::wait(); }
-    } loggerWaitGuard{};
-
-#ifdef _WIN32
-    SetConsoleTitle(L"ProxyPass");
-#endif
-
-    std::ios::sync_with_stdio(false);
+    initConsole();
 
     std::mutex              waitMutex{};
     std::condition_variable waitCv{};
@@ -39,26 +55,27 @@ int main() {
 
     sculk::protocol::AuthenticationKeyManager authKeyManager{};
     sculk::ProxySettings                      settings{};
+    sculk::Logger                             logger{"ProxyPass"};
 
     settings.load();
 
-    sculk::Logger("ProxyPass").info("Waiting for Microsoft Service...");
+    logger.info("Waiting for Microsoft Service...");
     if (auto status = authKeyManager.initMojangPublicKeyBlocking(); !status) {
-        sculk::Logger("ProxyPass").error("Failed to connect to Microsoft Service: {}", status.error().message());
+        logger.error("Failed to connect to Microsoft Service: {}", status.error().message());
         return 1;
     }
 
-    auto proxyPass = sculk::ProxyPass(authKeyManager, settings);
+    auto proxyPass = sculk::ProxyPass(authKeyManager, settings, logger);
     if (!proxyPass.start()) {
-        sculk::Logger("ProxyPass").error("Failed to start proxy server.");
+        logger.error("Failed to start proxy server.");
         return 1;
     }
-    sculk::Logger("ProxyPass").info("Proxy server started successfully.");
+    logger.info("Proxy server started successfully.");
 
     std::unique_lock waitLock{waitMutex};
     waitCv.wait(waitLock, [&] { return stopped; });
 
-    sculk::Logger("ProxyPass").info("Stopping proxy server...");
+    logger.info("Stopping proxy server...");
 
     return 0;
 }

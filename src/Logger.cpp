@@ -15,13 +15,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "Logger.hpp"
+#include <atomic>
 #include <chrono>
 #include <concurrentqueue.h>
-#include <cstdio>
-#include <ctime>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <limits>
 #include <memory>
+#include <parallel_hashmap/phmap.h>
 #include <print>
 #include <semaphore>
 #include <string>
@@ -31,397 +33,324 @@
 #include <utility>
 #include <vector>
 
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 namespace sculk {
 
 namespace {
 
-using LogLevel = Logger::LogLevel;
-
-struct MessageRecord {
-    LogLevel    level{LogLevel::Info};
-    std::string message{};
+struct LogTask {
+    std::chrono::system_clock::time_point mTimestamp{};
+    std::string                           mModuleName{};
+    Logger::LogLevel                      mLevel{};
+    std::string                           mMessage{};
+    std::shared_ptr<std::ofstream>        mLogFile{};
 };
 
-struct Task {
-    enum class Kind {
-        Message,
-        FlushFile,
-        CloseFile,
-        Wait,
-    } kind{Kind::Message};
+#define WRITE_LOG(FMT)     std::println(FMT "\033[0m", timestamp, moduleName, message)
+#define RGB_COLOR(R, G, B) "\033[38;2;" #R ";" #G ";" #B "m"
+#define RGB_RESET          "\033[0m"
 
-    LogLevel               level{LogLevel::Info};
-    std::string            moduleName{};
-    std::string            message{};
-    std::filesystem::path  filePath{};
-    std::binary_semaphore* completion{nullptr};
-};
-
-std::string_view levelName(LogLevel level) {
+void writeConsole(
+    std::string_view   timestamp,
+    const std::string& moduleName,
+    Logger::LogLevel   level,
+    const std::string& message
+) {
     switch (level) {
-    case LogLevel::Trace:
-        return "Trace";
-    case LogLevel::Debug:
-        return "Debug";
-    case LogLevel::Info:
-        return "Info";
-    case LogLevel::Warn:
-        return "Warn";
-    case LogLevel::Error:
-        return "Error";
-    case LogLevel::Fatal:
-        return "Fatal";
+    case Logger::LogLevel::Trace:
+        return WRITE_LOG(RGB_COLOR(0, 102, 51) "[{}] [TRACE] [{}] {}");
+    case Logger::LogLevel::Debug:
+        return WRITE_LOG(RGB_COLOR(128, 128, 128) "[{}] [DEBUG] [{}] {}");
+    case Logger::LogLevel::Warn:
+        return WRITE_LOG(RGB_COLOR(255, 255, 0) "[{}] [WARN] [{}] {}");
+    case Logger::LogLevel::Error:
+        return WRITE_LOG(RGB_COLOR(224, 16, 0) "[{}] [ERROR] [{}] {}");
+    case Logger::LogLevel::Fatal:
+        return WRITE_LOG(RGB_COLOR(255, 0, 0) "[{}] [FATAL] [{}] {}");
+    default:
+        return WRITE_LOG(RGB_COLOR(153, 255, 255) "[{}] " RGB_COLOR(0, 255, 255) "[INFO]" RGB_RESET " [{}] {}");
     }
-
-    return "Unknown";
 }
 
-std::string_view colorCode(LogLevel level) {
+constexpr std::string_view logLevelName(Logger::LogLevel level) {
     switch (level) {
-    case LogLevel::Trace:
-        return "90";
-    case LogLevel::Debug:
-        return "36";
-    case LogLevel::Info:
-        return "0";
-    case LogLevel::Warn:
-        return "33";
-    case LogLevel::Error:
-        return "31";
-    case LogLevel::Fatal:
-        return "1;31";
+    case Logger::LogLevel::Trace:
+        return "TRACE";
+    case Logger::LogLevel::Debug:
+        return "DEBUG";
+    case Logger::LogLevel::Warn:
+        return "WARN";
+    case Logger::LogLevel::Error:
+        return "ERROR";
+    case Logger::LogLevel::Fatal:
+        return "FATAL";
+    default:
+        return "INFO";
+    }
+}
+
+std::filesystem::path normalizeLogPath(const std::filesystem::path& filePath) {
+    std::error_code ec{};
+    auto            absolutePath = std::filesystem::absolute(filePath, ec);
+    if (ec) {
+        absolutePath = filePath;
+    }
+    return absolutePath.lexically_normal();
+}
+
+void ensureParentDirectory(const std::filesystem::path& filePath) {
+    const auto parentPath = filePath.parent_path();
+    if (parentPath.empty() || std::filesystem::exists(parentPath)) {
+        return;
     }
 
-    return "0";
-}
-
-std::string timestamp() {
-    const auto now    = std::chrono::system_clock::now();
-    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
-    const auto time   = std::chrono::system_clock::to_time_t(now);
-    auto       local  = std::tm{};
-
-#ifdef _WIN32
-    localtime_s(&local, &time);
-#else
-    localtime_r(&time, &local);
-#endif
-
-    return std::format("{:02}:{:02}:{:02}.{:03}", local.tm_hour, local.tm_min, local.tm_sec, millis);
-}
-
-std::string formatLogLine(LogLevel level, std::string_view moduleName, std::string_view message) {
-    const auto ts           = timestamp();
-    const auto name         = levelName(level);
-    const auto scopedModule = moduleName.empty() ? std::string_view{"Logger"} : moduleName;
-    return std::format("[{}] [{}] [{}] {}", ts, name, scopedModule, message);
-}
-
-std::string formatConsoleLine(LogLevel level, std::string_view moduleName, std::string_view message) {
-    const auto ts           = timestamp();
-    const auto name         = levelName(level);
-    const auto scopedModule = moduleName.empty() ? std::string_view{"Logger"} : moduleName;
-    return std::format("[{}] [\033[{}m{}\033[0m] [{}] {}", ts, colorCode(level), name, scopedModule, message);
-}
-
-std::filesystem::path absoluteLogPath(const std::filesystem::path& filePath) {
-    if (filePath.empty()) {
-        return {};
+    std::error_code ec{};
+    if (!std::filesystem::create_directories(parentPath, ec)) {
+        std::println(stderr, "Failed to create log directory: {}", ec.message());
     }
-
-    std::error_code error{};
-    auto            absolutePath = std::filesystem::absolute(filePath, error);
-    if (error) {
-        return filePath;
-    }
-    return absolutePath;
 }
+
+void writeLogTask(const LogTask& task) {
+    static auto zone = std::chrono::current_zone();
+    const auto  now  = std::chrono::zoned_time{zone, std::chrono::floor<std::chrono::seconds>(task.mTimestamp)};
+    writeConsole(std::format("{:%Y-%m-%d %H:%M:%S}", now), task.mModuleName, task.mLevel, task.mMessage);
+    if (task.mLogFile) {
+        *task.mLogFile << std::format(
+            "[{:%Y-%m-%d %H:%M:%S}] [{}] [{}] {}",
+            now,
+            task.mModuleName,
+            logLevelName(task.mLevel),
+            task.mMessage
+        ) << '\n';
+    }
+}
+
+constexpr bool operator>(Logger::LogLevel lhs, Logger::LogLevel rhs) {
+    return static_cast<std::uint8_t>(lhs) > static_cast<std::uint8_t>(rhs);
+}
+
+constexpr auto kPeriodicFlushInterval = std::chrono::seconds{1};
 
 struct SharedBackend {
-    struct LogFile {
-        std::filesystem::path path{};
-        std::ofstream         stream{};
+    using LogFileMap = phmap::parallel_flat_hash_map_m<std::filesystem::path, std::weak_ptr<std::ofstream>>;
+
+    std::shared_ptr<std::ofstream>                           mDefaultLogFile{};
+    LogFileMap                                               mLogFiles{};
+    moodycamel::ConcurrentQueue<LogTask>                     mLogTasks{};
+    std::counting_semaphore<std::numeric_limits<int>::max()> mTaskSignal{0};
+    std::atomic<bool>                                        mAcceptingTasks{true};
+    std::atomic<std::size_t>                                 mActiveProducers{0};
+    std::jthread                                             mIoThread{};
+
+    SharedBackend(std::filesystem::path defaultLogFilePath = "./logs/latest.log") {
+        defaultLogFilePath = normalizeLogPath(defaultLogFilePath);
+        ensureParentDirectory(defaultLogFilePath);
+
+        mDefaultLogFile = std::make_shared<std::ofstream>(defaultLogFilePath, std::ios::app);
+        if (!mDefaultLogFile->is_open()) {
+            std::println(stderr, "Failed to open default log file: {}", defaultLogFilePath.string());
+            mDefaultLogFile.reset();
+        }
+
+        mIoThread = std::jthread([this](std::stop_token stopToken) { ioThreadMain(stopToken); });
+    }
+
+    ~SharedBackend() { shutdown(); }
+
+    std::shared_ptr<std::ofstream> getDefaultLogFile() const { return mDefaultLogFile; }
+
+    std::shared_ptr<std::ofstream> getLogFile(const std::filesystem::path& filePath) {
+        const auto normalizedPath = normalizeLogPath(filePath);
+
+        std::shared_ptr<std::ofstream> existingLogFile{};
+        mLogFiles.if_contains(normalizedPath, [&](const auto& item) { existingLogFile = item.second.lock(); });
+        if (existingLogFile) {
+            return existingLogFile;
+        }
+
+        ensureParentDirectory(normalizedPath);
+
+        auto openedLogFile = std::make_shared<std::ofstream>(normalizedPath, std::ios::app);
+        if (!openedLogFile->is_open()) {
+            std::println(stderr, "Failed to open log file: {}", normalizedPath.string());
+            return nullptr;
+        }
+
+        std::shared_ptr<std::ofstream> selectedLogFile = openedLogFile;
+        mLogFiles.lazy_emplace_l(
+            normalizedPath,
+            [&](auto& item) {
+                if (auto activeLogFile = item.second.lock()) {
+                    selectedLogFile = std::move(activeLogFile);
+                } else {
+                    item.second = openedLogFile;
+                }
+            },
+            [&](const auto& ctor) { ctor(normalizedPath, std::weak_ptr<std::ofstream>{openedLogFile}); }
+        );
+        return selectedLogFile;
+    }
+
+    struct ProducerGuard final {
+        std::atomic<std::size_t>& counter;
+
+        explicit ProducerGuard(std::atomic<std::size_t>& counter) noexcept : counter(counter) {}
+        ProducerGuard(const ProducerGuard&)            = delete;
+        ProducerGuard& operator=(const ProducerGuard&) = delete;
+        ProducerGuard(ProducerGuard&&)                 = delete;
+        ProducerGuard& operator=(ProducerGuard&&)      = delete;
+        ~ProducerGuard() noexcept { counter.fetch_sub(1, std::memory_order_acq_rel); }
     };
 
-    moodycamel::ConcurrentQueue<Task> mQueue{};
-    std::counting_semaphore<>         mWake{0};
-    std::jthread                      mWorker{};
-    std::vector<LogFile>              mLogFiles{};
+    void processLogMessage(
+        std::chrono::system_clock::time_point&& timePoint,
+        std::string_view                        moduleName,
+        Logger::LogLevel                        level,
+        std::string&&                           message,
+        std::shared_ptr<std::ofstream>          logFile
+    ) {
+        if (!mAcceptingTasks.load(std::memory_order_acquire)) {
+            return;
+        }
 
-    SharedBackend() {
-#ifdef _WIN32
-        SetConsoleOutputCP(CP_UTF8);
-        HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (hStdout != INVALID_HANDLE_VALUE) {
-            DWORD dwMode = 0;
-            if (GetConsoleMode(hStdout, &dwMode)) {
-                SetConsoleMode(hStdout, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        mActiveProducers.fetch_add(1, std::memory_order_acq_rel);
+        ProducerGuard guard{mActiveProducers};
+
+        if (!mAcceptingTasks.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        if (!mLogTasks.enqueue(
+                LogTask{std::move(timePoint), std::string(moduleName), level, std::move(message), std::move(logFile)}
+            )) {
+            std::println(stderr, "Failed to enqueue log task");
+            return;
+        }
+
+        mTaskSignal.release();
+    }
+
+    void shutdown() {
+        const bool wasAccepting = mAcceptingTasks.exchange(false, std::memory_order_acq_rel);
+        if (wasAccepting) {
+            while (mActiveProducers.load(std::memory_order_acquire) != 0) {
+                std::this_thread::yield();
             }
         }
 
-        HANDLE hStderr = GetStdHandle(STD_ERROR_HANDLE);
-        if (hStderr != INVALID_HANDLE_VALUE) {
-            DWORD dwMode = 0;
-            if (GetConsoleMode(hStderr, &dwMode)) {
-                SetConsoleMode(hStderr, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-            }
+        if (mIoThread.joinable()) {
+            mIoThread.request_stop();
+            mTaskSignal.release();
+            mIoThread.join();
         }
-#endif
 
-        mWorker = std::jthread{[this](std::stop_token stopToken) { run(stopToken); }};
+        mLogFiles.clear();
+        mDefaultLogFile.reset();
     }
 
-    ~SharedBackend() {
-        mWorker.request_stop();
-        mWake.release();
-        if (mWorker.joinable()) {
-            mWorker.join();
+    void flushActiveLogFiles() {
+        std::vector<std::shared_ptr<std::ofstream>> files{};
+        if (mDefaultLogFile) {
+            files.emplace_back(mDefaultLogFile);
+        }
+
+        mLogFiles.for_each([&](const auto& item) {
+            if (auto logFile = item.second.lock()) {
+                files.emplace_back(std::move(logFile));
+            }
+        });
+
+        for (auto& file : files) {
+            file->flush();
         }
     }
 
-    void submitMessage(LogLevel level, std::string moduleName, std::string message, std::filesystem::path filePath) {
-        mQueue.enqueue(
-            Task{
-                .kind       = Task::Kind::Message,
-                .level      = level,
-                .moduleName = std::move(moduleName),
-                .message    = std::move(message),
-                .filePath   = std::move(filePath),
-            }
-        );
-        mWake.release();
-    }
+    void ioThreadMain(std::stop_token stopToken) {
+        LogTask    task{};
+        bool       hasPendingFileWrites = false;
+        const auto isUrgentLevel        = [](Logger::LogLevel level) { return level > Logger::LogLevel::Error; };
+        auto       lastPeriodicFlush    = std::chrono::steady_clock::now();
 
-    void submitFlushFile(std::filesystem::path filePath) {
-        mQueue.enqueue(Task{.kind = Task::Kind::FlushFile, .filePath = std::move(filePath)});
-        mWake.release();
-    }
-
-    void submitCloseFile(std::filesystem::path filePath) {
-        mQueue.enqueue(Task{.kind = Task::Kind::CloseFile, .filePath = std::move(filePath)});
-        mWake.release();
-    }
-
-    void wait() {
-        std::binary_semaphore completion{0};
-        mQueue.enqueue(Task{.kind = Task::Kind::Wait, .completion = &completion});
-        mWake.release();
-        completion.acquire();
-    }
-
-    void run(std::stop_token stopToken) {
         while (true) {
-            mWake.acquire();
+            mTaskSignal.acquire();
 
-            Task task{};
-            if (mQueue.try_dequeue(task)) {
-                handleTask(std::move(task));
-                continue;
+            while (mLogTasks.try_dequeue(task)) {
+                writeLogTask(task);
+
+                if (task.mLogFile) {
+                    hasPendingFileWrites = true;
+                    if (isUrgentLevel(task.mLevel)) {
+                        task.mLogFile->flush();
+                    }
+                }
+
+                const auto now = std::chrono::steady_clock::now();
+                if (hasPendingFileWrites && now - lastPeriodicFlush >= kPeriodicFlushInterval) {
+                    flushActiveLogFiles();
+                    hasPendingFileWrites = false;
+                    lastPeriodicFlush    = now;
+                }
             }
 
-            if (stopToken.stop_requested()) {
+            if (stopToken.stop_requested() && mActiveProducers.load(std::memory_order_acquire) == 0) {
+                while (mLogTasks.try_dequeue(task)) {
+                    writeLogTask(task);
+                    if (task.mLogFile) {
+                        hasPendingFileWrites = true;
+                        if (isUrgentLevel(task.mLevel)) {
+                            task.mLogFile->flush();
+                        }
+                    }
+                }
+
+                if (hasPendingFileWrites) {
+                    flushActiveLogFiles();
+                }
                 break;
-            }
-        }
-
-        for (auto& logFile : mLogFiles) {
-            if (logFile.stream.is_open()) {
-                logFile.stream.flush();
-                logFile.stream.close();
-            }
-        }
-    }
-
-    void handleTask(Task task) {
-        switch (task.kind) {
-        case Task::Kind::Message:
-            emit(task.level, task.moduleName, task.message, task.filePath);
-            return;
-        case Task::Kind::FlushFile:
-            flushFile(task.filePath);
-            return;
-        case Task::Kind::CloseFile:
-            closeFile(task.filePath);
-            return;
-        case Task::Kind::Wait:
-            for (auto& logFile : mLogFiles) {
-                if (logFile.stream.is_open()) {
-                    logFile.stream.flush();
-                }
-            }
-            if (task.completion) {
-                task.completion->release();
-            }
-            return;
-        }
-    }
-
-    std::ofstream& streamFor(const std::filesystem::path& filePath) {
-        for (auto& logFile : mLogFiles) {
-            if (logFile.path == filePath) {
-                if (!logFile.stream.is_open()) {
-                    logFile.stream.clear();
-                    logFile.stream.open(logFile.path, std::ios::out | std::ios::app);
-                }
-                return logFile.stream;
-            }
-        }
-
-        auto& logFile = mLogFiles.emplace_back(filePath, std::ofstream{});
-        logFile.stream.open(logFile.path, std::ios::out | std::ios::app);
-        return logFile.stream;
-    }
-
-    void flushFile(const std::filesystem::path& filePath) {
-        if (filePath.empty()) {
-            return;
-        }
-
-        for (auto& logFile : mLogFiles) {
-            if (logFile.path == filePath && logFile.stream.is_open()) {
-                logFile.stream.flush();
-                return;
-            }
-        }
-    }
-
-    void closeFile(const std::filesystem::path& filePath) {
-        if (filePath.empty()) {
-            return;
-        }
-
-        for (auto& logFile : mLogFiles) {
-            if (logFile.path == filePath && logFile.stream.is_open()) {
-                logFile.stream.flush();
-                logFile.stream.close();
-                return;
-            }
-        }
-    }
-
-    void
-    emit(LogLevel level, std::string_view moduleName, std::string_view message, const std::filesystem::path& filePath) {
-        auto* const stream  = level == LogLevel::Error || level == LogLevel::Fatal ? stderr : stdout;
-        const auto  line    = formatLogLine(level, moduleName, message);
-        const auto  colored = formatConsoleLine(level, moduleName, message);
-
-        std::println(stream, "{}", colored);
-        std::fflush(stream);
-
-        if (!filePath.empty()) {
-            auto& logFile = streamFor(filePath);
-            if (logFile.is_open()) {
-                logFile << line << '\n';
             }
         }
     }
 };
 
 SharedBackend& backend() {
-    static auto instance = std::make_unique<SharedBackend>();
-    return *instance;
+    static SharedBackend instance{};
+    return instance;
 }
 
 } // anonymous namespace
 
 struct Logger::Impl {
-    std::string                mModuleName{};
-    std::filesystem::path      mFilePath{};
-    std::vector<MessageRecord> mMessages{};
+    std::string                    mModuleName{};
+    std::shared_ptr<std::ofstream> mLogFile{};
+    std::atomic<LogLevel>          mLogLevel{};
 
-    Impl(std::string moduleName, std::filesystem::path filePath)
-    : mModuleName(std::move(moduleName)),
-      mFilePath(std::move(filePath)) {}
+    Impl(std::string_view moduleName)
+    : mModuleName(moduleName),
+      mLogFile(backend().getDefaultLogFile()),
+      mLogLevel(LogLevel::Info) {}
 };
 
-Logger::Logger(std::string moduleName, std::filesystem::path filePath)
-: mImpl(std::make_unique<Impl>(std::move(moduleName), absoluteLogPath(filePath))) {}
+Logger::Logger(std::string_view moduleName) : mImpl(std::make_unique<Impl>(moduleName)) {}
 
-Logger::~Logger() { flush(); }
+Logger::~Logger() = default;
 
-Logger::Logger(Logger&& other) noexcept = default;
+Logger::Logger(Logger&& other) noexcept            = default;
+Logger& Logger::operator=(Logger&& other) noexcept = default;
 
-Logger& Logger::operator=(Logger&& other) noexcept {
-    if (this == &other) {
-        return *this;
-    }
+void Logger::setFile(std::filesystem::path filePath) { mImpl->mLogFile = backend().getLogFile(filePath); }
 
-    flush();
-    mImpl = std::move(other.mImpl);
-    return *this;
-}
-
-void Logger::flushFile(std::filesystem::path filePath) { backend().submitFlushFile(absoluteLogPath(filePath)); }
-
-void Logger::closeFile(std::filesystem::path filePath) { backend().submitCloseFile(absoluteLogPath(filePath)); }
-
-void Logger::wait() { backend().wait(); }
-
-void Logger::appendMessage(LogLevel level, std::string message) {
-    if (!mImpl) {
+void Logger::log(LogLevel level, std::string&& message) {
+    if (level < mImpl->mLogLevel.load(std::memory_order_relaxed)) {
         return;
     }
-
-    mImpl->mMessages.emplace_back(level, std::move(message));
+    backend().processLogMessage(
+        std::chrono::system_clock::now(),
+        mImpl->mModuleName,
+        level,
+        std::move(message),
+        mImpl->mLogFile
+    );
 }
 
-void Logger::flush() noexcept {
-    if (!mImpl) {
-        return;
-    }
-
-    for (auto& message : mImpl->mMessages) {
-        backend().submitMessage(message.level, mImpl->mModuleName, std::move(message.message), mImpl->mFilePath);
-    }
-    mImpl->mMessages.clear();
-}
-
-void Logger::flushFile() {
-    if (!mImpl) {
-        return;
-    }
-
-    flush();
-    backend().submitFlushFile(mImpl->mFilePath);
-}
-
-void Logger::closeFile() {
-    if (!mImpl) {
-        return;
-    }
-
-    flush();
-    backend().submitCloseFile(mImpl->mFilePath);
-}
-
-Logger& Logger::trace(std::string message) {
-    appendMessage(LogLevel::Trace, std::move(message));
-    return *this;
-}
-Logger& Logger::debug(std::string message) {
-    appendMessage(LogLevel::Debug, std::move(message));
-    return *this;
-}
-Logger& Logger::info(std::string message) {
-    appendMessage(LogLevel::Info, std::move(message));
-    return *this;
-}
-Logger& Logger::warn(std::string message) {
-    appendMessage(LogLevel::Warn, std::move(message));
-    return *this;
-}
-Logger& Logger::error(std::string message) {
-    appendMessage(LogLevel::Error, std::move(message));
-    return *this;
-}
-Logger& Logger::fatal(std::string message) {
-    appendMessage(LogLevel::Fatal, std::move(message));
-    return *this;
-}
+void Logger::setLevel(LogLevel level) noexcept { mImpl->mLogLevel.store(level, std::memory_order_relaxed); }
 
 } // namespace sculk

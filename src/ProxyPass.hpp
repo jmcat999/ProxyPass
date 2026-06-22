@@ -15,6 +15,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #pragma once
+#include "Logger.hpp"
 #include "ProxyBridge.hpp"
 #include "ProxySettings.hpp"
 #include <parallel_hashmap/phmap.h>
@@ -28,7 +29,6 @@
 #include <sculk/protocol/connection/ServerNetworkSystem.hpp>
 #include <sculk/protocol/connection/io/ClientIoRuntime.hpp>
 #include <sculk/protocol/connection/thread/ThreadPool.hpp>
-#include <string_view>
 
 namespace sculk {
 
@@ -38,9 +38,12 @@ class ProxyPass {
     const protocol::AuthenticationKeyManager&                                    mAuthManager;
     protocol::PemKeyPair                                                         mProxyServerKeyPair{};
     ProxySettings&                                                               mSettings;
+    Logger&                                                                      mLogger;
 
 public:
-    ProxyPass(protocol::AuthenticationKeyManager const& authManager, ProxySettings& settings);
+    ProxyPass(protocol::AuthenticationKeyManager const& authManager, ProxySettings& settings, Logger& logger);
+
+    Logger& getLogger() { return mLogger; }
 
     bool start();
 

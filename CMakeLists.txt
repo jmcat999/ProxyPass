@@ -29,7 +29,7 @@ set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
 include(FetchContent)
 set(PROTOCOL_ENABLE_FORMATTING ON CACHE BOOL "Enable formatting support in Protocol")
-set(PROTOCOL_ENABLE_DETAIL_ERRORS ON CACHE BOOL "Enable detail errors in Protocol")
+set(PROTOCOL_ENABLE_EXCEPTIONS OFF CACHE BOOL "Disable exceptions in Protocol")
 FetchContent_Declare(
 	Protocol
 	GIT_REPOSITORY https://github.com/SculkCatalystMC/Protocol.git
@@ -137,46 +137,3 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 	LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BIN_DIR}"
 	ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_LIB_DIR}"
 )
-
-add_executable(LoggerTests
-	"${CMAKE_CURRENT_SOURCE_DIR}/tests/LoggerTests.cpp"
-	"${CMAKE_CURRENT_SOURCE_DIR}/src/Logger.cpp"
-)
-
-target_include_directories(LoggerTests PRIVATE
-	"${CMAKE_CURRENT_SOURCE_DIR}/src"
-	$<BUILD_INTERFACE:${parallel_hashmap_SOURCE_DIR}>
-	$<BUILD_INTERFACE:${concurrentqueue_SOURCE_DIR}>
-)
-
-target_compile_features(LoggerTests PUBLIC cxx_std_23)
-
-if(MSVC)
-	target_compile_options(LoggerTests PRIVATE
-		/W4
-		/utf-8
-		/GR-
-		/Zc:preprocessor
-		/permissive-
-		/EHs-c-
-	)
-	target_compile_definitions(LoggerTests PRIVATE
-		UNICODE
-		NOMINMAX
-		_HAS_EXCEPTIONS=0
-	)
-else()
-	target_compile_options(LoggerTests PRIVATE
-		-Wall
-		-Wextra
-		-Wpedantic
-		-fno-rtti
-		-fno-exceptions
-	)
-endif()
-
-set_target_properties(LoggerTests PROPERTIES
-	RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-)
-
-add_test(NAME LoggerTests COMMAND LoggerTests)

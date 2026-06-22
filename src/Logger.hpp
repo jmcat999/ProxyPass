@@ -25,7 +25,17 @@ namespace sculk {
 
 class Logger {
 public:
-    explicit Logger(std::string moduleName, std::filesystem::path filePath = "latest.log");
+    enum class LogLevel : std::uint8_t {
+        Trace = 0,
+        Debug = 1,
+        Info  = 2,
+        Warn  = 3,
+        Error = 4,
+        Fatal = 5,
+    };
+
+public:
+    explicit Logger(std::string_view moduleName);
     ~Logger();
 
     Logger(const Logger&)            = delete;
@@ -33,69 +43,48 @@ public:
     Logger(Logger&& other) noexcept;
     Logger& operator=(Logger&& other) noexcept;
 
-    enum class LogLevel {
-        Trace,
-        Debug,
-        Info,
-        Warn,
-        Error,
-        Fatal,
-    };
-
-    static void wait();
+    void setFile(std::filesystem::path filePath);
+    void setLevel(LogLevel level) noexcept;
 
     template <class... Args>
-    Logger& trace(std::format_string<Args...> format, Args&&... args) {
-        appendMessage(LogLevel::Trace, std::format(format, std::forward<Args>(args)...));
-        return *this;
+    void trace(std::format_string<Args...> format, Args&&... args) {
+        log(LogLevel::Trace, std::format(format, std::forward<Args>(args)...));
     }
 
     template <class... Args>
-    Logger& debug(std::format_string<Args...> format, Args&&... args) {
-        appendMessage(LogLevel::Debug, std::format(format, std::forward<Args>(args)...));
-        return *this;
+    void debug(std::format_string<Args...> format, Args&&... args) {
+        log(LogLevel::Debug, std::format(format, std::forward<Args>(args)...));
     }
 
     template <class... Args>
-    Logger& info(std::format_string<Args...> format, Args&&... args) {
-        appendMessage(LogLevel::Info, std::format(format, std::forward<Args>(args)...));
-        return *this;
+    void info(std::format_string<Args...> format, Args&&... args) {
+        log(LogLevel::Info, std::format(format, std::forward<Args>(args)...));
     }
 
     template <class... Args>
-    Logger& warn(std::format_string<Args...> format, Args&&... args) {
-        appendMessage(LogLevel::Warn, std::format(format, std::forward<Args>(args)...));
-        return *this;
+    void warn(std::format_string<Args...> format, Args&&... args) {
+        log(LogLevel::Warn, std::format(format, std::forward<Args>(args)...));
     }
 
     template <class... Args>
-    Logger& error(std::format_string<Args...> format, Args&&... args) {
-        appendMessage(LogLevel::Error, std::format(format, std::forward<Args>(args)...));
-        return *this;
+    void error(std::format_string<Args...> format, Args&&... args) {
+        log(LogLevel::Error, std::format(format, std::forward<Args>(args)...));
     }
 
     template <class... Args>
-    Logger& fatal(std::format_string<Args...> format, Args&&... args) {
-        appendMessage(LogLevel::Fatal, std::format(format, std::forward<Args>(args)...));
-        return *this;
+    void fatal(std::format_string<Args...> format, Args&&... args) {
+        log(LogLevel::Fatal, std::format(format, std::forward<Args>(args)...));
     }
 
-    Logger& trace(std::string message);
-    Logger& debug(std::string message);
-    Logger& info(std::string message);
-    Logger& warn(std::string message);
-    Logger& error(std::string message);
-    Logger& fatal(std::string message);
-
-    void flushFile();
-    void closeFile();
-
-    static void flushFile(std::filesystem::path filePath);
-    static void closeFile(std::filesystem::path filePath);
+    void trace(std::string_view message) { log(LogLevel::Trace, std::string(message)); }
+    void debug(std::string_view message) { log(LogLevel::Debug, std::string(message)); }
+    void info(std::string_view message) { log(LogLevel::Info, std::string(message)); }
+    void warn(std::string_view message) { log(LogLevel::Warn, std::string(message)); }
+    void error(std::string_view message) { log(LogLevel::Error, std::string(message)); }
+    void fatal(std::string_view message) { log(LogLevel::Fatal, std::string(message)); }
 
 private:
-    void appendMessage(LogLevel level, std::string message);
-    void flush() noexcept;
+    void log(LogLevel level, std::string&& message);
 
     struct Impl;
     std::unique_ptr<Impl> mImpl;
