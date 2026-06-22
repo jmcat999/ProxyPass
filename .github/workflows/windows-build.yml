@@ -26,14 +26,23 @@ jobs:
       - name: Install build dependencies
         shell: pwsh
         run: |
-          choco install ninja -y
+          choco install ninja llvm -y
           vcpkg install openssl:x64-windows
+
+      - name: Show compiler versions
+        shell: pwsh
+        run: |
+          clang-cl --version
+          cmake --version
+          ninja --version
 
       - name: Configure CMake
         shell: pwsh
         run: |
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=clang-cl `
+            -DCMAKE_CXX_COMPILER=clang-cl `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build Release
