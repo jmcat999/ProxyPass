@@ -45,6 +45,36 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang-cl `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
 
+      - name: Patch RakNet for clang-cl
+        shell: pwsh
+        run: |
+          $raknetSrc = Get-ChildItem -Path build\_deps -Directory -Filter "raknet-src" -Recurse | Select-Object -First 1
+          if (-not $raknetSrc) {
+            Write-Error "raknet-src not found"
+            exit 1
+          }
+
+          $gettimeofday = Join-Path $raknetSrc.FullName "Source\gettimeofday.h"
+          if (Test-Path $gettimeofday) {
+            $txt = Get-Content $gettimeofday -Raw
+            $txt = $txt -replace '#include\s*<\s*time\.h\s*>', '#include <time.h>'
+            Set-Content $gettimeofday $txt -NoNewline
+            Write-Host "Patched $gettimeofday"
+          }
+
+          Get-ChildItem -Path build -Recurse -Filter flags.make | ForEach-Object {
+            $txt = Get-Content $_.FullName -Raw
+            $txt = $txt -replace '/WX', ''
+            Set-Content $_.FullName $txt -NoNewline
+          }
+
+          Get-ChildItem -Path build -Recurse -Filter build.ninja | ForEach-Object {
+            $txt = Get-Content $_.FullName -Raw
+            $txt = $txt -replace '/WX', ''
+            $txt = $txt -replace '-Werror', ''
+            Set-Content $_.FullName $txt -NoNewline
+          }
+
       - name: Build Release
         shell: pwsh
         run: |
